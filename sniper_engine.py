@@ -934,13 +934,6 @@ class DiscordGateway:
             c.channel_id == ch and c.enabled for c in self.config.monitored_channels)
 
         if not monitored:
-            known_guilds = {c.guild_id for c in self.config.monitored_channels}
-            if guild in known_guilds:
-                self.on_log(LogEntry(LogLevel.WARN,
-                    f"[CONFIG] Message in known server — channel {ch} is not monitored"))
-            else:
-                self.on_log(LogEntry(LogLevel.DEBUG,
-                    f"[MSG] Ignored — channel {ch} not in monitored list", dev_only=True))
             return
 
         self.on_log(LogEntry(LogLevel.DEBUG,
