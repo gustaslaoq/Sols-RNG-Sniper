@@ -186,7 +186,7 @@ RESIZE_M      = 6
 def resource_path(relative_path: str) -> str:
     """Resolve path for both dev mode and PyInstaller frozen mode.
     Checks assets/ subfolder first, then falls back to current dir / _MEIPASS."""
-    # When frozen by PyInstaller, _MEIPASS is the temp extraction dir
+    # when frozen by PyInstaller, _MEIPASS is the temp extraction dir
     try:
         base = sys._MEIPASS
     except AttributeError:
