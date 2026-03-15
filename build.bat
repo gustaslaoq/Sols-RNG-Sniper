@@ -161,8 +161,13 @@ if "%UPDATE_MODE%"=="1" (
         goto wait_exit
     )
     :do_launch
-    echo  Old process exited. Launching new version...
-    timeout /t 3 /nobreak >nul
+    echo.
+    echo  ==========================================
+    echo   BUILD COMPLETE  ^|  Commit: %COMMIT_SHA%
+    echo  ==========================================
+    echo.
+    echo  Press any key to launch the updated app...
+    pause >nul
     start "" "%TARGET_EXE%"
     exit /b 0
 )
