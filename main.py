@@ -401,6 +401,73 @@ class CooldownManager:
         with self._lock: return sum(1 for exp in self._state.values() if now < exp)
 
 
+
+# ── Snipe History ─────────────────────────────────────────────────────────────
+
+class SnipeHistoryManager:
+    MAX_ENTRIES = 500
+
+    def __init__(self, path: Path):
+        self._path    = path
+        self._lock    = Lock()
+        self._entries: list = []
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self._path, encoding="utf-8") as fh:
+                self._entries = json.load(fh)
+            if not isinstance(self._entries, list):
+                self._entries = []
+        except (FileNotFoundError, json.JSONDecodeError):
+            self._entries = []
+
+    def _save(self):
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as fh:
+                json.dump(self._entries[-self.MAX_ENTRIES:], fh, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def record(self, snipe_data: dict):
+        entry = {
+            "timestamp":         snipe_data.get("timestamp_iso", datetime.datetime.now().isoformat()),
+            "profile":           snipe_data.get("profile", "?"),
+            "author":            snipe_data.get("author", "?"),
+            "author_id":         snipe_data.get("author_id", ""),
+            "author_display":    snipe_data.get("author_display", ""),
+            "author_avatar_url": snipe_data.get("author_avatar_url", ""),
+            "keyword":           snipe_data.get("keyword", ""),
+            "roblox_web_url":    snipe_data.get("roblox_web_url", ""),
+            "uri":               snipe_data.get("uri", ""),
+            "jump_url":          snipe_data.get("jump_url", ""),
+            "raw_message":       snipe_data.get("raw_message", "")[:500],
+            "biome_verified":    None,   # filled later by on_biome callback
+        }
+        with self._lock:
+            self._entries.append(entry)
+            if len(self._entries) > self.MAX_ENTRIES:
+                self._entries = self._entries[-self.MAX_ENTRIES:]
+            self._save()
+
+    def update_last_biome(self, verified: bool):
+        """Mark the last snipe entry with biome verification result."""
+        with self._lock:
+            if self._entries:
+                self._entries[-1]["biome_verified"] = verified
+                self._save()
+
+    def all_entries(self) -> list:
+        with self._lock:
+            return list(reversed(self._entries))   # newest first
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+            self._save()
+
+
 # ── Plugin Loader ─────────────────────────────────────────────────────────────
 
 _PLUGIN_REQUIRED = ("PLUGIN_NAME", "PLUGIN_ICON", "PLUGIN_DESCRIPTION")
@@ -658,32 +725,61 @@ class WebhookSender:
         elif event_type == "snipe":
             if not self.config.on_snipe:
                 return
-            profile_name = kwargs.get("profile", "Unknown")
-            author       = kwargs.get("author",  "Unknown")
-            raw_msg      = kwargs.get("raw_message", "")
-            link         = kwargs.get("link", "")
-            jump_url     = kwargs.get("jump_url", "")
+            profile_name     = kwargs.get("profile", "Unknown")
+            author_display   = kwargs.get("author_display") or kwargs.get("author", "Unknown")
+            author_name      = kwargs.get("author", "Unknown")
+            author_id        = kwargs.get("author_id", "")
+            author_avatar    = kwargs.get("author_avatar_url", "")
+            raw_msg          = kwargs.get("raw_message", "")
+            roblox_web_url   = kwargs.get("roblox_web_url", kwargs.get("link", ""))
+            jump_url         = kwargs.get("jump_url", "")
+            keyword          = kwargs.get("keyword", "")
+            ts_ago_unix      = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
-            embed["title"] = ts_label
-            desc_parts = [f"> # Snipped — {profile_name}"]
-            desc_parts.append(f"**Profile:** `{profile_name}`")
-            desc_parts.append(f"**Author:** `{author}`")
-            desc_parts.append(f"\n**Raw message:**\n```\n{raw_msg[:1000]}\n```")
-            if link:
-                desc_parts.append(f"**Link:** {link}")
-            embed["description"] = "\n".join(desc_parts)
-            embed["color"]       = 0xFFFFFF
+            # author as thumbnail
+            if author_avatar:
+                embed["thumbnail"] = {"url": author_avatar}
 
+            # author display in title row via author field
+            author_tag = f"@{author_name}" if author_name and author_name != author_display else f"@{author_display}"
+            embed["author"] = {
+                "name":     f"{author_display} ({author_tag})",
+                "icon_url": author_avatar or self.logo_url,
+            }
+
+            embed["description"] = (
+                f"**Sniped** — {profile_name}  (<t:{ts_ago_unix}:R>)"
+            )
+            if keyword:
+                embed["fields"] = [
+                    {"name": "Keyword Detected", "value": f"`{keyword}`", "inline": True},
+                    {"name": "Profile",           "value": f"`{profile_name}`", "inline": True},
+                ]
+            else:
+                embed["fields"] = [
+                    {"name": "Profile", "value": f"`{profile_name}`", "inline": True},
+                ]
+
+            if raw_msg:
+                embed["fields"].append(
+                    {"name": "Raw Message", "value": f"```\n{raw_msg[:900]}\n```",
+                     "inline": False})
+
+            embed["color"] = 0xFFFFFF
+
+            # Build components: jump link row on top, then web URL button
+            buttons = []
             if jump_url:
-                components = [{
-                    "type": 1,
-                    "components": [{
-                        "type":  2,
-                        "label": "Jump to Message",
-                        "style": 5,
-                        "url":   jump_url,
-                    }],
-                }]
+                buttons.append({
+                    "type": 2, "label": "Jump to Message", "style": 5, "url": jump_url,
+                })
+            if roblox_web_url:
+                buttons.append({
+                    "type": 2, "label": "Open in Roblox", "style": 5,
+                    "url": roblox_web_url,
+                })
+            if buttons:
+                components = [{"type": 1, "components": buttons}]
 
         elif event_type == "biome":
             if not self.config.on_biome:
@@ -698,6 +794,12 @@ class WebhookSender:
                 f"**Expected:** `{expected}`\n**Detected:** `{detected}`"
             )
             embed["color"] = 0xFFFFFF if is_match else 0x444444
+
+        elif event_type == "blacklist_deleted":
+            uid      = kwargs.get("user_id", "?")
+            uname    = kwargs.get("username", "?")
+            embed["description"] = f"**{uid} (@{uname})** has been blacklisted for deleting their message."
+            embed["color"]       = 0xc0392b
 
         else:
             return
@@ -1029,6 +1131,7 @@ SVG = {
     "info":     '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
     "zap":      '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
     "webhook":  '<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+    "clock":    '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
 }
 
 def _svg_icon(key: str, color: str = "#555555", sz: int = 16) -> QIcon:
@@ -1154,12 +1257,13 @@ class HelpIcon(QLabel):
 # ENGINE BRIDGE
 
 class Bridge(QObject):
-    sig_log    = Signal(object)
-    sig_status = Signal(object)
-    sig_snipe  = Signal(dict)
-    sig_biome  = Signal(str, str, bool)
-    sig_ping   = Signal(float)
-    sig_paused = Signal(bool)
+    sig_log              = Signal(object)
+    sig_status           = Signal(object)
+    sig_snipe            = Signal(dict)
+    sig_biome            = Signal(str, str, bool)
+    sig_ping             = Signal(float)
+    sig_paused           = Signal(bool)
+    sig_delete_blacklist = Signal(str, str)   # uid, username
 
     def __init__(self, cfg: SniperConfig):
         super().__init__()
@@ -1167,7 +1271,8 @@ class Bridge(QObject):
         # ── Build subsystem managers ──────────────────────────────────────
         app_dir = _get_app_dir()
 
-        bl = BlacklistManager(app_dir / "blacklist.json")
+        bl   = BlacklistManager(app_dir / "blacklist.json")
+        hist = SnipeHistoryManager(app_dir / "snipe_history.json")
 
         cd_cfg = CooldownConfig(
             guild_ttl   = getattr(cfg, "cooldown_guild_ttl",   30.0),
@@ -1176,9 +1281,6 @@ class Bridge(QObject):
         )
         cd = CooldownManager(cd_cfg)
 
-        # Plugins folder must be next to the .exe, not relative to CWD.
-        # When frozen by PyInstaller sys.executable is the .exe path.
-        # When running as a script it falls back to the script's directory.
         if getattr(sys, "frozen", False):
             _base_dir = Path(os.path.dirname(sys.executable))
         else:
@@ -1189,17 +1291,74 @@ class Bridge(QObject):
         pl.discover()
 
         # ── Build engine with injected managers ───────────────────────────
-        self.engine = SniperEngine(cfg, blacklist=bl, cooldown=cd, plugins=pl)
+        self.engine  = SniperEngine(cfg, blacklist=bl, cooldown=cd, plugins=pl)
+        self.history = hist
+        self.blacklist_mgr = bl
+        self._cfg    = cfg
 
         self._thread: Optional[threading.Thread]          = None
         self._loop:   Optional[asyncio.AbstractEventLoop] = None
+        self._webhook_session: Optional[aiohttp.ClientSession] = None
 
-        self.engine.on_log         = self.sig_log.emit
-        self.engine.on_status      = self.sig_status.emit
-        self.engine.on_snipe       = self.sig_snipe.emit
-        self.engine.on_biome       = self.sig_biome.emit
+        # ── Wire engine callbacks ─────────────────────────────────────────
+        self.engine.on_log    = self.sig_log.emit
+        self.engine.on_status = self.sig_status.emit
+        self.engine.on_paused = self.sig_paused.emit
         self.engine.on_ping_update = self.sig_ping.emit
-        self.engine.on_paused      = self.sig_paused.emit
+
+        def _on_snipe(data: dict):
+            hist.record(data)
+            self.sig_snipe.emit(data)
+            # Fire webhook in engine loop if running
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._send_snipe_webhook(data), self._loop)
+
+        def _on_biome(exp: str, det: str, ok: bool):
+            hist.update_last_biome(ok)
+            self.sig_biome.emit(exp, det, ok)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._send_biome_webhook(exp, det, ok), self._loop)
+
+        def _on_delete_blacklist(uid: str, username: str):
+            self.sig_delete_blacklist.emit(uid, username)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._send_delete_blacklist_webhook(uid, username), self._loop)
+
+        self.engine.on_snipe            = _on_snipe
+        self.engine.on_biome            = _on_biome
+        self.engine.on_delete_blacklist = _on_delete_blacklist
+
+    async def _get_webhook_session(self) -> aiohttp.ClientSession:
+        if self._webhook_session is None or self._webhook_session.closed:
+            self._webhook_session = aiohttp.ClientSession()
+        return self._webhook_session
+
+    async def _send_snipe_webhook(self, data: dict):
+        try:
+            sess   = await self._get_webhook_session()
+            sender = WebhookSender(sess, self._cfg.webhook)
+            await sender.send("snipe", **data)
+        except Exception:
+            pass
+
+    async def _send_biome_webhook(self, exp: str, det: str, ok: bool):
+        try:
+            sess   = await self._get_webhook_session()
+            sender = WebhookSender(sess, self._cfg.webhook)
+            await sender.send("biome", expected=exp, detected=det, match=ok)
+        except Exception:
+            pass
+
+    async def _send_delete_blacklist_webhook(self, uid: str, username: str):
+        try:
+            sess   = await self._get_webhook_session()
+            sender = WebhookSender(sess, self._cfg.webhook)
+            await sender.send("blacklist_deleted", user_id=uid, username=username)
+        except Exception:
+            pass
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -1219,6 +1378,9 @@ class Bridge(QObject):
     def stop(self):
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self.engine.stop(), self._loop)
+            if self._webhook_session and not self._webhook_session.closed:
+                asyncio.run_coroutine_threadsafe(
+                    self._webhook_session.close(), self._loop)
         if self._thread:
             threading.Thread(
                 target=self._thread.join, args=(4.0,),
@@ -1333,41 +1495,43 @@ class EdgeCursorFilter(QObject):
         return False
 
 
-class ChannelRow(QFrame):
+class ChannelItemRow(QFrame):
+    """Single channel row inside a server group — shows only the channel portion."""
     delete_requested = Signal()
     changed          = Signal()
 
-    def __init__(self, ch: "ChannelConfig", parent=None):
+    def __init__(self, ch: "ChannelConfig", channel_label: str, parent=None):
         super().__init__(parent)
         self.setObjectName("ChannelRow")
-        self._ch = ch
+        self._ch    = ch
+        self._label = channel_label   # just the "#channel" part
         self.setMouseTracking(True)
         self._build()
 
     def _build(self):
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 7, 10, 7); lay.setSpacing(10)
+        lay.setContentsMargins(32, 5, 10, 5); lay.setSpacing(10)  # 32px left indent
 
         self._toggle = ToggleSwitch(self._ch.enabled)
         self._toggle.toggled.connect(self._on_toggle)
         lay.addWidget(self._toggle)
 
-        info = QVBoxLayout(); info.setSpacing(1)
-        col  = C["text"] if self._ch.enabled else C["muted"]
-        self._name_lbl = QLabel(self._ch.name or "Unnamed")
+        col = C["text"] if self._ch.enabled else C["muted"]
+        self._name_lbl = QLabel(self._label)
         self._name_lbl.setStyleSheet(
-            f"color: {col}; font-weight: 600; font-size: 12px; background: transparent;")
-        self._id_lbl = QLabel(f"{self._ch.guild_id} / #{self._ch.channel_id}")
+            f"color: {col}; font-size: 12px; background: transparent;")
+        self._id_lbl = QLabel(f"#{self._ch.channel_id}")
         self._id_lbl.setStyleSheet(
-            f"color: {C['muted']}; font-size: 10px; background: transparent;")
+            f"color: {C['dim']}; font-size: 10px; background: transparent;")
+        info = QVBoxLayout(); info.setSpacing(0)
         info.addWidget(self._name_lbl); info.addWidget(self._id_lbl)
         lay.addLayout(info); lay.addStretch()
 
         self._del_btn = QPushButton()
         self._del_btn.setObjectName("ChDeleteBtn")
-        self._del_btn.setIcon(_svg_icon("trash", C["red2"], 14))
-        self._del_btn.setIconSize(QSize(14, 14))
-        self._del_btn.setFixedSize(28, 28)
+        self._del_btn.setIcon(_svg_icon("trash", C["red2"], 13))
+        self._del_btn.setIconSize(QSize(13, 13))
+        self._del_btn.setFixedSize(26, 26)
         self._del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._del_btn.setVisible(False)
         self._del_btn.clicked.connect(self.delete_requested.emit)
@@ -1377,20 +1541,40 @@ class ChannelRow(QFrame):
         self._ch.enabled = v
         col = C["text"] if v else C["muted"]
         self._name_lbl.setStyleSheet(
-            f"color: {col}; font-weight: 600; font-size: 12px; background: transparent;")
+            f"color: {col}; font-size: 12px; background: transparent;")
         self.changed.emit()
-
-    def refresh(self):
-        self._toggle.blockSignals(True)
-        self._toggle.setChecked(self._ch.enabled)
-        self._toggle.blockSignals(False)
-        col = C["text"] if self._ch.enabled else C["muted"]
-        self._name_lbl.setText(self._ch.name or "Unnamed")
-        self._name_lbl.setStyleSheet(
-            f"color: {col}; font-weight: 600; font-size: 12px; background: transparent;")
 
     def enterEvent(self, e):  self._del_btn.setVisible(True);  super().enterEvent(e)
     def leaveEvent(self, e):  self._del_btn.setVisible(False); super().leaveEvent(e)
+
+
+class ServerGroupHeader(QFrame):
+    """Non-interactive header that shows a server name above its channel rows."""
+    def __init__(self, guild_name: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChannelRow")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 2); lay.setSpacing(6)
+        icon_lbl = QLabel("⌗")
+        icon_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 11px; background: transparent;")
+        lay.addWidget(icon_lbl)
+        name_lbl = QLabel(guild_name)
+        name_lbl.setStyleSheet(
+            f"color: {C['white']}; font-size: 11px; font-weight: 700; "
+            f"letter-spacing: 0.5px; background: transparent;")
+        lay.addWidget(name_lbl); lay.addStretch()
+
+
+# Keep ChannelRow as a thin alias for backward compat with any plugin that might reference it
+class ChannelRow(ChannelItemRow):
+    def __init__(self, ch: "ChannelConfig", parent=None):
+        # extract the channel label from the full name
+        name = ch.name or ""
+        if "›" in name:
+            channel_label = name.split("›", 1)[1].strip()
+        else:
+            channel_label = name
+        super().__init__(ch, channel_label, parent)
 
 
 class StatusBadge(QLabel):
@@ -1924,6 +2108,7 @@ _PAGES = [
     ("lock",     "Blacklist"),
     ("logs",     "Logs"),
     ("zap",      "Plugins"),
+    ("clock",    "History"),
 ]
 
 
@@ -2668,6 +2853,8 @@ class SettingsPage(QWidget):
         wl.addWidget(self._sec_profiles())
         wl.addWidget(self._sec_autojoin())
         wl.addWidget(self._sec_cooldown())
+        wl.addWidget(self._sec_sound_alert())
+        wl.addWidget(self._sec_extra_tokens())
         wl.addWidget(self._sec_appearance())
         self._dev_sec = self._sec_dev(); self._dev_sec.setVisible(self._dev)
         wl.addWidget(self._dev_sec)
@@ -2935,6 +3122,125 @@ class SettingsPage(QWidget):
             app.setStyleSheet(make_qss())
         self._schedule_save()
 
+    def _sec_sound_alert(self) -> QFrame:
+        c, lay = self._card("Sound Alert")
+        lay.addWidget(lbl(
+            "Plays a beep when a snipe fires — useful when the app is in the background.",
+            "FieldHint"))
+        self._chk_sound = QCheckBox("Enable sound alert on snipe")
+        self._chk_sound.setChecked(getattr(self._cfg, "sound_alert_enabled", False))
+        self._chk_sound.toggled.connect(self._schedule_save)
+        lay.addWidget(self._chk_sound)
+
+        freq_row = QHBoxLayout()
+        freq_row.addWidget(lbl("Frequency (Hz):", "FieldLbl"))
+        self._spn_sound_freq = QSpinBox(); self._spn_sound_freq.setRange(200, 8000)
+        self._spn_sound_freq.setValue(getattr(self._cfg, "sound_alert_freq", 1000))
+        self._spn_sound_freq.valueChanged.connect(self._schedule_save)
+        freq_row.addWidget(self._spn_sound_freq); freq_row.addStretch()
+        lay.addLayout(freq_row)
+
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(lbl("Duration (ms):", "FieldLbl"))
+        self._spn_sound_dur = QSpinBox(); self._spn_sound_dur.setRange(50, 2000)
+        self._spn_sound_dur.setSuffix(" ms")
+        self._spn_sound_dur.setValue(getattr(self._cfg, "sound_alert_dur_ms", 200))
+        self._spn_sound_dur.valueChanged.connect(self._schedule_save)
+        dur_row.addWidget(self._spn_sound_dur); dur_row.addStretch()
+        lay.addLayout(dur_row)
+
+        test_btn = QPushButton("▶ Test Sound"); test_btn.setObjectName("SmallBtn")
+        test_btn.clicked.connect(self._test_sound)
+        lay.addWidget(test_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        return c
+
+    def _test_sound(self):
+        freq = self._spn_sound_freq.value()
+        dur  = self._spn_sound_dur.value()
+        def _play():
+            try:
+                import winsound
+                winsound.Beep(freq, dur)
+            except Exception:
+                pass
+        threading.Thread(target=_play, daemon=True, name="SoundTest").start()
+
+    def _sec_extra_tokens(self) -> QFrame:
+        c, lay = self._card("Extra Discord Tokens")
+        lay.addWidget(lbl(
+            "Add additional Discord account tokens to monitor channels simultaneously.\n"
+            "Each extra token runs a secondary gateway in listen-only mode — it receives\n"
+            "messages but does not change the displayed connection status.",
+            "FieldHint"))
+        lay.addWidget(lbl(
+            "⚠  Using self-bot tokens may violate Discord ToS. Use at your own risk.",
+            "FieldHint"))
+
+        input_row = QHBoxLayout(); input_row.setSpacing(8)
+        self._extra_tok_input = QLineEdit()
+        self._extra_tok_input.setPlaceholderText("Paste extra token here…")
+        self._extra_tok_input.setEchoMode(QLineEdit.EchoMode.Password)
+        input_row.addWidget(self._extra_tok_input)
+        show_chk = QCheckBox("Show")
+        show_chk.toggled.connect(lambda v: self._extra_tok_input.setEchoMode(
+            QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
+        input_row.addWidget(show_chk)
+        add_btn = QPushButton("+ Add"); add_btn.setObjectName("SmallBtn")
+        add_btn.setFixedWidth(68)
+        add_btn.clicked.connect(self._add_extra_token)
+        input_row.addWidget(add_btn)
+        lay.addLayout(input_row)
+
+        self._extra_tok_list = QVBoxLayout()
+        self._extra_tok_list.setSpacing(4)
+        lay.addLayout(self._extra_tok_list)
+        self._refresh_extra_tokens()
+        return c
+
+    def _add_extra_token(self):
+        tok = self._extra_tok_input.text().strip()
+        if not tok or len(tok) < 20:
+            return
+        tokens = list(getattr(self._cfg, "extra_tokens", []))
+        if tok not in tokens:
+            tokens.append(tok)
+            self._cfg.extra_tokens = tokens
+            self._cfg.save()
+            self._extra_tok_input.clear()
+            self._refresh_extra_tokens()
+            self.config_saved.emit(self._cfg)
+
+    def _remove_extra_token(self, tok: str):
+        tokens = list(getattr(self._cfg, "extra_tokens", []))
+        if tok in tokens:
+            tokens.remove(tok)
+            self._cfg.extra_tokens = tokens
+            self._cfg.save()
+            self._refresh_extra_tokens()
+            self.config_saved.emit(self._cfg)
+
+    def _refresh_extra_tokens(self):
+        while self._extra_tok_list.count():
+            item = self._extra_tok_list.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        tokens = getattr(self._cfg, "extra_tokens", [])
+        if not tokens:
+            empty = QLabel("No extra tokens added.")
+            empty.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
+            self._extra_tok_list.addWidget(empty)
+            return
+        for tok in tokens:
+            row_w = QWidget()
+            row_h = QHBoxLayout(row_w); row_h.setContentsMargins(0, 0, 0, 0); row_h.setSpacing(8)
+            masked = f"{tok[:10]}…{tok[-4:]}" if len(tok) > 16 else tok
+            tok_lbl = QLabel(masked)
+            tok_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 11px; font-family: monospace;")
+            row_h.addWidget(tok_lbl); row_h.addStretch()
+            del_btn = QPushButton("Remove"); del_btn.setObjectName("SmallBtn")
+            del_btn.clicked.connect(lambda _, t=tok: self._remove_extra_token(t))
+            row_h.addWidget(del_btn)
+            self._extra_tok_list.addWidget(row_w)
+
     def _sec_dev(self) -> QFrame:
         c, lay = self._card("Dev Mode")
         self._chk_lf = QCheckBox("Log to file")
@@ -2949,10 +3255,11 @@ class SettingsPage(QWidget):
     def _connect_autosave(self):
         for w in (self._tok, ):
             w.textChanged.connect(self._schedule_save)
-        for w in (self._chk_aj, self._chk_close, self._chk_ab, self._chk_lf):
+        for w in (self._chk_aj, self._chk_close, self._chk_ab, self._chk_lf, self._chk_sound):
             w.toggled.connect(self._schedule_save)
         for w in (self._spn, self._spn_tail, self._spn_pause,
-                  self._spn_cd_guild, self._spn_cd_profile, self._spn_cd_link):
+                  self._spn_cd_guild, self._spn_cd_profile, self._spn_cd_link,
+                  self._spn_sound_freq, self._spn_sound_dur):
             w.valueChanged.connect(self._schedule_save)
 
     def _schedule_save(self, *args):
@@ -3029,20 +3336,56 @@ class SettingsPage(QWidget):
             self._refresh_ch(); self._schedule_save()
 
     def _refresh_ch(self):
-        for row in self._ch_rows:
-            self._ch_vlay.removeWidget(row); row.deleteLater()
+        # Remove all managed widgets from the container
+        for w in self._ch_rows:
+            self._ch_vlay.removeWidget(w); w.deleteLater()
         self._ch_rows.clear()
 
-        for i, ch in enumerate(self._cfg.monitored_channels):
-            row = ChannelRow(ch)
-            row.changed.connect(self._schedule_save)
-            row.delete_requested.connect(lambda _i=i: self._del_ch_at(_i))
-            self._ch_vlay.addWidget(row); self._ch_rows.append(row)
+        channels = self._cfg.monitored_channels
 
-        if not self._cfg.monitored_channels:
+        if not channels:
             empty = QLabel("  No channels added yet.")
             empty.setStyleSheet(f"color: {C['dim']}; font-size: 11px; padding: 14px;")
             self._ch_vlay.addWidget(empty)
+            self._ch_rows.append(empty)
+            self._ch_vlay.addStretch()
+            return
+
+        # Group channels by guild_id, preserving insertion order
+        from collections import OrderedDict
+        groups: OrderedDict = OrderedDict()
+        for i, ch in enumerate(channels):
+            gid = ch.guild_id
+            if gid not in groups:
+                groups[gid] = []
+            groups[gid].append((i, ch))
+
+        for guild_id, items in groups.items():
+            # Derive server display name from first channel's name
+            first_name = items[0][1].name or ""
+            if "›" in first_name:
+                guild_display = first_name.split("›", 1)[0].strip()
+            else:
+                guild_display = guild_id
+
+            # Server header
+            header = ServerGroupHeader(guild_display)
+            self._ch_vlay.addWidget(header)
+            self._ch_rows.append(header)
+
+            for (idx, ch) in items:
+                # Channel label = part after "›", or full name
+                if "›" in (ch.name or ""):
+                    channel_label = ch.name.split("›", 1)[1].strip()
+                else:
+                    channel_label = ch.name or f"#{ch.channel_id}"
+
+                row = ChannelItemRow(ch, channel_label)
+                row.changed.connect(self._schedule_save)
+                row.delete_requested.connect(lambda _i=idx: self._del_ch_at(_i))
+                self._ch_vlay.addWidget(row)
+                self._ch_rows.append(row)
+
         self._ch_vlay.addStretch()
 
     def _refresh_profiles(self):
@@ -3127,6 +3470,10 @@ class SettingsPage(QWidget):
         self._cfg.cooldown_guild_ttl      = float(self._spn_cd_guild.value())
         self._cfg.cooldown_profile_ttl    = float(self._spn_cd_profile.value())
         self._cfg.cooldown_link_ttl       = float(self._spn_cd_link.value())
+        # Sound alert
+        self._cfg.sound_alert_enabled     = self._chk_sound.isChecked()
+        self._cfg.sound_alert_freq        = self._spn_sound_freq.value()
+        self._cfg.sound_alert_dur_ms      = self._spn_sound_dur.value()
         if self._dev:
             self._cfg.log_to_file    = self._chk_lf.isChecked()
             self._cfg.log_tail_bytes = self._spn_tail.value()
@@ -3414,7 +3761,8 @@ class NotificationsPage(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BlacklistPage(QWidget):
-    _fetch_done = Signal(str, str)
+    _fetch_done     = Signal(str, str)
+    config_changed  = Signal()      # emitted when delete-watch seconds changes
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3426,13 +3774,16 @@ class BlacklistPage(QWidget):
     def set_manager(self, manager, cfg=None):
         self._manager = manager
         self._cfg_ref  = cfg
+        if cfg:
+            self._dw_spin.setValue(getattr(cfg, "delete_watch_seconds", 0))
         self.refresh()
 
     def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(26, 22, 26, 16)
-        lay.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(26, 22, 26, 16)
+        outer.setSpacing(14)
 
+        # ── header ────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
         col = QVBoxLayout(); col.setSpacing(3)
         col.addWidget(lbl("Blacklist", "PageTitle"))
@@ -3449,9 +3800,10 @@ class BlacklistPage(QWidget):
         clear_btn.clicked.connect(self._clear_all)
         hdr.addWidget(clear_btn)
 
-        lay.addLayout(hdr)
-        lay.addWidget(hdiv())
+        outer.addLayout(hdr)
+        outer.addWidget(hdiv())
 
+        # ── scrollable list area ──────────────────────────────────────────
         add_card = QFrame(); add_card.setObjectName("SettCard")
         add_lay  = QVBoxLayout(add_card)
         add_lay.setContentsMargins(14, 12, 14, 12); add_lay.setSpacing(8)
@@ -3473,10 +3825,10 @@ class BlacklistPage(QWidget):
         self._add_status = QLabel("")
         self._add_status.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
         add_lay.addWidget(self._add_status)
-        lay.addWidget(add_card)
+        outer.addWidget(add_card)
 
         self._stat_lbl = lbl("0 users blacklisted", "FieldHint")
-        lay.addWidget(self._stat_lbl)
+        outer.addWidget(self._stat_lbl)
 
         scroll = SmoothScrollArea(); scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -3486,7 +3838,7 @@ class BlacklistPage(QWidget):
         self._list_lay.setContentsMargins(0, 4, 6, 10)
         self._list_lay.setSpacing(6)
         scroll.setWidget(self._wrap)
-        lay.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_lbl = QLabel("No blacklisted users.")
         self._empty_lbl.setStyleSheet(
@@ -3494,8 +3846,52 @@ class BlacklistPage(QWidget):
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._list_lay.addWidget(self._empty_lbl)
         self._list_lay.addStretch()
-
         self._rows: list[QFrame] = []
+
+        # ── delete-watch config section (below the list) ──────────────────
+        outer.addWidget(hdiv())
+        cfg_card = QFrame(); cfg_card.setObjectName("SettCard")
+        cfg_lay  = QVBoxLayout(cfg_card)
+        cfg_lay.setContentsMargins(14, 12, 14, 12); cfg_lay.setSpacing(10)
+
+        dw_hdr = QHBoxLayout()
+        dw_hdr.addWidget(lbl("AUTO-BLACKLIST ON MESSAGE DELETE", "GrpLabel"))
+        dw_hdr.addWidget(HelpIcon(
+            "If a user whose message triggered a snipe deletes that message\n"
+            "within the watch window, they are auto-blacklisted.\n\n"
+            "Set to 0 to disable. Recommended: 30–60 seconds.\n"
+            "A webhook embed is also sent when someone is auto-blacklisted."))
+        dw_hdr.addStretch()
+        cfg_lay.addLayout(dw_hdr)
+
+        dw_row = QHBoxLayout(); dw_row.setSpacing(10)
+        dw_row.addWidget(lbl("Watch window (seconds):", "FieldLbl"))
+        self._dw_spin = QSpinBox()
+        self._dw_spin.setRange(0, 300)
+        self._dw_spin.setValue(0)
+        self._dw_spin.setSuffix(" s")
+        self._dw_spin.setToolTip("0 = disabled")
+        self._dw_spin.valueChanged.connect(self._on_dw_changed)
+        dw_row.addWidget(self._dw_spin)
+        dw_row.addWidget(lbl("(0 = disabled)", "FieldHint"))
+        dw_row.addStretch()
+        cfg_lay.addLayout(dw_row)
+
+        cfg_lay.addWidget(lbl(
+            "When triggered, an embed is sent to your webhook:\n"
+            "  user_id (@username) has been blacklisted for deleting their message.",
+            "FieldHint"))
+        outer.addWidget(cfg_card)
+
+    def _on_dw_changed(self, val: int):
+        if self._cfg_ref:
+            self._cfg_ref.delete_watch_seconds = val
+            self._cfg_ref.save()
+            self.config_changed.emit()
+
+    def add_auto_entry(self, uid: str, username: str):
+        """Called from MainWindow when engine fires on_delete_blacklist."""
+        self.refresh()
 
     def _add_manual(self):
         uid = self._add_id_input.text().strip()
@@ -3609,6 +4005,189 @@ class BlacklistPage(QWidget):
             "Remove ALL blacklisted users?"
         ) == QMessageBox.StandardButton.Yes:
             self._manager.clear()
+            self.refresh()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE: SNIPE HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SnipeHistoryPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history: Optional[SnipeHistoryManager] = None
+        self._rows: list[QFrame] = []
+        self._build()
+
+    def set_history(self, history: "SnipeHistoryManager"):
+        self._history = history
+        self.refresh()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 22, 26, 16)
+        lay.setSpacing(14)
+
+        hdr = QHBoxLayout()
+        col = QVBoxLayout(); col.setSpacing(3)
+        col.addWidget(lbl("Snipe History", "PageTitle"))
+        col.addWidget(lbl("All snipes this session and from previous sessions.", "PageSub"))
+        hdr.addLayout(col); hdr.addStretch()
+
+        refresh_btn = QPushButton("⟳ Refresh")
+        refresh_btn.setObjectName("GhostBtn")
+        refresh_btn.clicked.connect(self.refresh)
+        hdr.addWidget(refresh_btn)
+
+        clear_btn = QPushButton("Clear History")
+        clear_btn.setObjectName("GhostBtn")
+        clear_btn.clicked.connect(self._clear)
+        hdr.addWidget(clear_btn)
+
+        lay.addLayout(hdr)
+        lay.addWidget(hdiv())
+
+        self._stat_lbl = lbl("No snipes recorded yet.", "FieldHint")
+        lay.addWidget(self._stat_lbl)
+
+        scroll = SmoothScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._wrap = QWidget()
+        self._list_lay = QVBoxLayout(self._wrap)
+        self._list_lay.setContentsMargins(0, 4, 6, 10)
+        self._list_lay.setSpacing(8)
+        scroll.setWidget(self._wrap)
+        lay.addWidget(scroll)
+
+        self._empty_lbl = QLabel("No snipes recorded yet.")
+        self._empty_lbl.setStyleSheet(
+            f"color: {C['dim']}; font-size: 12px; padding: 20px;")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._list_lay.addWidget(self._empty_lbl)
+        self._list_lay.addStretch()
+
+    def add_entry(self, snipe_data: dict):
+        """Called in real-time when a new snipe fires."""
+        if self._history:
+            self._rebuild_list(self._history.all_entries())
+
+    def refresh(self):
+        if self._history is None:
+            return
+        self._rebuild_list(self._history.all_entries())
+
+    def _rebuild_list(self, entries: list):
+        for row in self._rows:
+            self._list_lay.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+
+        count = len(entries)
+        self._stat_lbl.setText(
+            f"{count} snipe{'s' if count != 1 else ''} recorded" if count else "No snipes recorded yet.")
+        self._empty_lbl.setVisible(count == 0)
+
+        for entry in entries:
+            row = self._make_row(entry)
+            self._list_lay.insertWidget(self._list_lay.count() - 1, row)
+            self._rows.append(row)
+
+    def _make_row(self, entry: dict) -> QFrame:
+        row = QFrame(); row.setObjectName("SettCard")
+        lay = QVBoxLayout(row)
+        lay.setContentsMargins(14, 12, 14, 12); lay.setSpacing(6)
+
+        # ── top row: profile badge + timestamp + biome status ────────────
+        top = QHBoxLayout(); top.setSpacing(8)
+
+        profile_lbl = QLabel(entry.get("profile", "?"))
+        profile_lbl.setStyleSheet(
+            f"color: {C['white']}; font-size: 12px; font-weight: 700; "
+            f"background: {C['border2']}; border-radius: 4px; padding: 1px 7px;")
+        top.addWidget(profile_lbl)
+
+        if entry.get("keyword"):
+            kw_lbl = QLabel(entry["keyword"])
+            kw_lbl.setStyleSheet(
+                f"color: {C['green2']}; font-size: 10px; font-weight: 600; "
+                f"background: rgba(0,204,102,0.08); border-radius: 4px; padding: 1px 6px;")
+            top.addWidget(kw_lbl)
+
+        top.addStretch()
+
+        # Biome verification badge
+        bv = entry.get("biome_verified")
+        if bv is True:
+            bv_lbl = QLabel("✓ Biome OK")
+            bv_lbl.setStyleSheet(f"color: {C['green2']}; font-size: 10px; font-weight: 600;")
+            top.addWidget(bv_lbl)
+        elif bv is False:
+            bv_lbl = QLabel("✗ Wrong Biome")
+            bv_lbl.setStyleSheet(f"color: {C['red2']}; font-size: 10px; font-weight: 600;")
+            top.addWidget(bv_lbl)
+
+        # Timestamp
+        ts_raw = entry.get("timestamp", "")
+        try:
+            dt   = datetime.datetime.fromisoformat(ts_raw)
+            ts   = dt.strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            ts = ts_raw[:19] if ts_raw else "?"
+        ts_lbl = QLabel(ts)
+        ts_lbl.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
+        top.addWidget(ts_lbl)
+        lay.addLayout(top)
+
+        # ── author ────────────────────────────────────────────────────────
+        author_display = entry.get("author_display") or entry.get("author", "?")
+        author_id      = entry.get("author_id", "")
+        author_tag     = f"@{entry.get('author', author_display)}"
+        author_line    = f"{author_display} ({author_tag})" if author_display != entry.get("author") else author_tag
+        author_lbl = QLabel(author_line)
+        author_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        lay.addWidget(author_lbl)
+
+        # ── raw message preview ───────────────────────────────────────────
+        raw = entry.get("raw_message", "")
+        if raw:
+            raw_lbl = QLabel(raw[:120] + ("…" if len(raw) > 120 else ""))
+            raw_lbl.setStyleSheet(
+                f"color: {C['dim']}; font-size: 10px; font-style: italic;")
+            raw_lbl.setWordWrap(True)
+            lay.addWidget(raw_lbl)
+
+        # ── action buttons ────────────────────────────────────────────────
+        btns = QHBoxLayout(); btns.setSpacing(6)
+        roblox_url = entry.get("roblox_web_url", "")
+        jump_url   = entry.get("jump_url", "")
+        if roblox_url:
+            rb_btn = QPushButton("Open in Roblox")
+            rb_btn.setObjectName("SmallBtn")
+            rb_btn.clicked.connect(lambda _, u=roblox_url: self._open_url(u))
+            btns.addWidget(rb_btn)
+        if jump_url:
+            jmp_btn = QPushButton("Jump to Message")
+            jmp_btn.setObjectName("SmallBtn")
+            jmp_btn.clicked.connect(lambda _, u=jump_url: self._open_url(u))
+            btns.addWidget(jmp_btn)
+        btns.addStretch()
+        lay.addLayout(btns)
+
+        return row
+
+    @staticmethod
+    def _open_url(url: str):
+        import webbrowser
+        webbrowser.open(url)
+
+    def _clear(self):
+        if self._history is None:
+            return
+        if QMessageBox.question(
+            self, "Clear History", "Remove all snipe history entries?"
+        ) == QMessageBox.StandardButton.Yes:
+            self._history.clear()
             self.refresh()
 
 
@@ -3827,8 +4406,9 @@ class MainWindow(QMainWindow):
         self._pbl = BlacklistPage()
         self._pl  = LogsPage(self._dev)
         self._ppg = PluginsPage()
+        self._phi = SnipeHistoryPage()
 
-        for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._ppg):
+        for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._ppg, self._phi):
             self._stk.addWidget(pg)
 
         body.addWidget(self._stk); v.addLayout(body)
@@ -3866,6 +4446,8 @@ class MainWindow(QMainWindow):
             self._pbl.refresh()
         elif idx == 5:
             self._ppg.refresh()
+        elif idx == 6:
+            self._phi.refresh()
 
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -3935,6 +4517,7 @@ class MainWindow(QMainWindow):
         self._br.sig_biome.connect(self._on_biome)
         self._br.sig_ping.connect(self._on_ping)
         self._br.sig_paused.connect(self._on_engine_paused)
+        self._br.sig_delete_blacklist.connect(self._on_delete_blacklist)
         self._br.start()
         self._run = True
         self._pd.on_start()
@@ -3942,6 +4525,7 @@ class MainWindow(QMainWindow):
         # Wire subsystem pages to the engine's injected managers
         engine = self._br.engine
         self._pbl.set_manager(engine.blacklist, self._cfg)
+        self._phi.set_history(self._br.history)
         # Sync the plugins page to the engine's loader (may differ from startup loader)
         self._ppg.set_loader(engine._plugins)
         self._startup_plugin_loader = engine._plugins
@@ -3983,7 +4567,8 @@ class MainWindow(QMainWindow):
             self._pd.append(e, self._dev)
 
     def _on_biome(self, expected: str, detected: str, matched: bool):
-        self._send_webhook("biome", expected=expected, detected=detected, match=matched)
+        # Webhook is now fired by Bridge directly in the engine loop — no duplicate send here
+        pass
 
     def _on_engine_paused(self, paused: bool):
         if paused:
@@ -4025,8 +4610,16 @@ class MainWindow(QMainWindow):
         msg   = f"Detected in server. ({n} total)"
         self._tray_notify(title, msg, get_tray_icon_img())
 
-        # Single webhook send — passes full dict as kwargs
-        self._send_webhook("snipe", **data)
+        # Update history page in real time
+        self._phi.add_entry(data)
+        # Webhook fired by Bridge in engine loop — no duplicate here
+
+    def _on_delete_blacklist(self, uid: str, username: str):
+        """Auto-blacklist fired by engine delete-watch."""
+        self._pbl.add_auto_entry(uid, username)
+        e = LogEntry(LogLevel.WARN,
+                     f"[BLACKLIST] Auto-blacklisted {username} ({uid}) — deleted snipe message")
+        self._pl.append(e); self._pd.append(e, self._dev)
 
     def _on_ping(self, p: float):
         self._pd.c_ping.set_value(f"{p:.0f}")
