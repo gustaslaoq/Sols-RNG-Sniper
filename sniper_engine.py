@@ -1102,6 +1102,11 @@ class SniperEngine:
 
         self._log(LogLevel.INFO, "[ENGINE] Sniper starting…")
 
+        if self._plugins:
+            self._plugins.broadcast("on_start", {
+                "config": self.config,
+            })
+
         self._tasks = [
             asyncio.create_task(self._run_gateway(),      name="gateway"),
             asyncio.create_task(self._ping_updater(),     name="ping"),
@@ -1254,6 +1259,14 @@ class SniperEngine:
         self._log(LogLevel.DEBUG,
             f"[FILTER] Profile '{profile.name}' matched — scanning for link", dev_only=True)
 
+        if self._plugins:
+            self._plugins.broadcast("on_message_matched", {
+                "profile": profile.name,
+                "author":  author,
+                "content": content,
+                "full":    full,
+            })
+
         link = self._resolver.extract_roblox_link(full)
         if not link:
             self._log(LogLevel.INFO,
@@ -1281,6 +1294,12 @@ class SniperEngine:
             )
             if blocked:
                 self._log(LogLevel.INFO, f"[COOLDOWN] Blocked — {reason}")
+                if self._plugins:
+                    self._plugins.broadcast("on_cooldown_blocked", {
+                        "reason":  reason,
+                        "profile": profile.name,
+                        "uri":     uri,
+                    })
                 return
             self.cooldown.mark(guild_id, profile.name, uri)
 
@@ -1390,6 +1409,11 @@ class SniperEngine:
             action = self.config.biome_leave_action
             if action != "none":
                 asyncio.create_task(self._biome_watcher(expected, action))
+            if self._plugins:
+                self._plugins.broadcast("on_biome_verified", {
+                    "expected": expected,
+                    "detected": detected,
+                })
         else:
             self._log(LogLevel.WARN,
                 f"[ANTI-BAIT] Wrong biome — expected '{expected}', got '{detected}'")
@@ -1442,6 +1466,8 @@ class SniperEngine:
                 stable_count = 0
 
     def _execute_biome_leave(self, action: str):
+        if self._plugins:
+            self._plugins.broadcast("on_biome_left", {"action": action})
         if action == "kill":
             self._log(LogLevel.INFO, "[BIOME WATCHER] Closing Roblox…")
             ProcessManager.kill_roblox()
