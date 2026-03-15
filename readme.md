@@ -12,7 +12,7 @@ Monitors Discord channels in real time and joins verified server links instantly
 [![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org/downloads)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?style=flat-square&logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/github/license/gustaslaoq/Sols-RNG-Sniper?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/gustaslaoq/Sols-RNG-Sniper?style=flat-square&label=Latest)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases)
+[![Download](https://img.shields.io/badge/Download-build.bat-00c853?style=flat-square&logo=github)](https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/build.bat)
 
 </div>
 
@@ -88,24 +88,36 @@ Everything else the app needs (PySide6, PyInstaller, aiohttp, psutil, etc.) is d
 
 You only need one file: `build.bat`.
 
-1. Create a folder anywhere, for example `C:\Sniper\`
-2. Download `build.bat` from this repo and place it inside that folder
+1. Download `build.bat` by clicking the **Download** badge above, or [right-click here and save as](https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/build.bat)
+2. Save it anywhere — Desktop, Downloads folder, wherever you prefer
 3. Double-click `build.bat`
-4. A console window will open and run through 9 steps — this takes about 3–5 minutes depending on your internet speed
+4. A console window opens and runs through 9 steps — this takes about 3–5 minutes
 5. When the build finishes, press any key to launch the app
 
-After the build, your folder will contain:
+The script decides where to place the app automatically:
 
+- **If `build.bat` is in a dedicated empty folder** — the app is installed directly there alongside the bat.
+- **If `build.bat` is in a common location** (Downloads, Desktop, Documents, home folder, etc.) or a folder that already has other files — the script creates a `SlaoqSniper\` subfolder and installs there.
+
+**Example — dedicated folder (empty):**
 ```
-Sniper/
-├── SlaoqSniper.exe     ← the app
-├── build.bat           ← run this again to update
-├── version.txt         ← current build SHA
-├── assets/
-│   ├── logo.png
-│   └── app.ico
-└── plugins/
-    └── example_plugin.py
+C:\Sniper\
+├── build.bat
+├── SlaoqSniper.exe     ← installed here
+├── version.txt
+├── assets\
+└── plugins\
+```
+
+**Example — Downloads or Desktop:**
+```
+C:\Users\You\Downloads\
+├── build.bat
+└── SlaoqSniper\
+    ├── SlaoqSniper.exe     ← isolated in subfolder
+    ├── version.txt
+    ├── assets\
+    └── plugins\
 ```
 
 **To update later:** just run `build.bat` again. It checks GitHub for new commits. If you're already on the latest version it skips the build and opens the app directly.
