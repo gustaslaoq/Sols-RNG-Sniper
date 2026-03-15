@@ -2572,6 +2572,10 @@ class ProfileEditor(QWidget):
         for w in (self._chk_enabled, self._chk_rx, self._inp_biome):
             w.blockSignals(False)
 
+        for w in (self._lbl_biome, self._inp_biome, self._lbl_kill_auto,
+                  self._chk_rx, self._trigger_group):
+            w.setVisible(not is_global)
+
         self._wl.clear()
         for k in p.trigger_keywords: self._wl.addItem(k)
         self._bl.clear()
