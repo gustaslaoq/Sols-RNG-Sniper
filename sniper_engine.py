@@ -333,6 +333,7 @@ class SniperConfig:
     extra_tokens:            list          = field(default_factory=list)
     # Private server owner lookup via Roblox API
     owner_info_enabled:      bool          = False
+    roblox_cookie:           str           = ""    # .ROBLOSECURITY for owner lookup
     # Internal — not serialised
     config_path:             str           = field(default="", repr=False, compare=False)
 
@@ -378,6 +379,7 @@ class SniperConfig:
             "delete_watch_seconds": self.delete_watch_seconds,
             "extra_tokens":         self.extra_tokens,
             "owner_info_enabled":   self.owner_info_enabled,
+            "roblox_cookie":        self.roblox_cookie,
         }
         with open(self.config_path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
