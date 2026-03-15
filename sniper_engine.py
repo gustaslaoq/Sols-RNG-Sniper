@@ -431,25 +431,26 @@ class ProcessManager:
     def is_in_game() -> bool:
         if not ProcessManager.is_roblox_running():
             return False
-        if not ROBLOX_LOG_PATH.exists():
-            return False
         try:
-            logs = list(ROBLOX_LOG_PATH.glob("*.log"))
-            if not logs:
-                return False
-            most_recent = max(logs, key=lambda p: p.stat().st_mtime)
-            age = time.time() - most_recent.stat().st_mtime
-            if age > 90:
-                return False
-            text = most_recent.read_bytes()[-8192:].decode("utf-8", errors="ignore")
-            in_game_markers = [
-                "placeId=", "GameInstanceId=", "game.PlaceId",
-                "[FLog::GameJoinUtil]", "[FLog::SingleSurfaceApp]",
-                "Joining game", "PerformanceStatsReporter",
-            ]
-            return any(m in text for m in in_game_markers)
+            for proc in psutil.process_iter(["name", "cmdline"]):
+                try:
+                    if proc.info["name"] not in ROBLOX_PROCESS_NAMES:
+                        continue
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    if any(k in cmdline for k in (
+                        "placeId=", "gameInstanceId",
+                        "privateServerLinkCode", "launchMode=play",
+                        "browsertrackerid",
+                    )):
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
         except Exception:
-            return False
+            pass
+        return False
+
+    @staticmethod
+    def open_roblox_link(uri: str):
         try:
             system = platform.system()
             if system == "Windows":
@@ -458,8 +459,9 @@ class ProcessManager:
                 subprocess.Popen(["open", uri])
             else:
                 subprocess.Popen(["xdg-open", uri])
+            logger.info("Opened Roblox URI: %s", uri[:80])
         except Exception as exc:
-            logger.error("Failed to open Roblox link: %s", exc)
+            logger.error("Failed to open Roblox link %r: %s", uri[:80], exc)
 
     @staticmethod
     def restart_roblox(delay: float = 1.0):
