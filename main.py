@@ -419,6 +419,10 @@ class PluginRecord:
     def icon(self)        -> str: return getattr(self.module, "PLUGIN_ICON",        "bell")
     @property
     def description(self) -> str: return getattr(self.module, "PLUGIN_DESCRIPTION", "")
+    @property
+    def version(self)     -> str: return getattr(self.module, "PLUGIN_VERSION",     "1.0")
+    @property
+    def author(self)      -> str: return getattr(self.module, "PLUGIN_AUTHOR",      "")
 
     def call(self, fn_name: str, *args, **kwargs) -> Any:
         if not self.enabled or self.module is None: return None
@@ -429,6 +433,15 @@ class PluginRecord:
         except Exception as exc:
             print(f"[Plugin:{self.name}] Error in {fn_name}(): {exc}")
             return None
+
+    def get_setting(self, key: str, default=None):
+        settings = getattr(self.module, "PLUGIN_SETTINGS", {})
+        return settings.get(key, default)
+
+    def set_setting(self, key: str, value):
+        if not hasattr(self.module, "PLUGIN_SETTINGS"):
+            self.module.PLUGIN_SETTINGS = {}
+        self.module.PLUGIN_SETTINGS[key] = value
 
 
 class PluginLoader:
