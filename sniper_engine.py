@@ -1494,26 +1494,30 @@ class SniperEngine:
                     dev_only=True)
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
 
-            roblox_running = ProcessManager.is_roblox_running()
-            in_game        = ProcessManager.is_in_game() if roblox_running else False
+            roblox_running   = ProcessManager.is_roblox_running()
+            in_game          = ProcessManager.is_in_game() if roblox_running else False
+            force_close      = self.config.close_roblox_after_join
             self._log(LogLevel.DEBUG,
-                f"[JOIN] roblox_running={roblox_running}, in_game={in_game}",
+                f"[JOIN] roblox_running={roblox_running}, in_game={in_game}, "
+                f"force_close={force_close}",
                 dev_only=True)
 
-            if roblox_running and in_game:
+            loop = asyncio.get_running_loop()
+
+            if roblox_running and (in_game or force_close):
+                reason = "in a game" if in_game else "'Close Roblox before joining' is on"
                 self._log(LogLevel.INFO,
-                    "[JOIN] Roblox is in a game — killing to avoid auto-rejoin conflict…")
-                loop = asyncio.get_running_loop()
+                    f"[JOIN] Killing Roblox ({reason})…")
                 await loop.run_in_executor(
                     None, lambda: ProcessManager.kill_roblox_and_wait(timeout=5.0))
                 await asyncio.sleep(0.4)
                 self._log_reader.mark_launch()
                 ProcessManager.open_roblox_link(uri)
-                self._log(LogLevel.INFO, "[JOIN] Relaunched after kill — joining server…")
+                self._log(LogLevel.INFO, "[JOIN] Relaunched — joining server…")
 
-            elif roblox_running and not in_game:
+            elif roblox_running:
                 self._log(LogLevel.INFO,
-                    "[JOIN] Roblox is on home page — opening link directly (no kill needed)…")
+                    "[JOIN] Roblox is on home page — opening link…")
                 self._log_reader.mark_launch()
                 ProcessManager.open_roblox_link(uri)
 
