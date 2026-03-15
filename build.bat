@@ -178,7 +178,7 @@ if "%UPDATE_MODE%"=="1" (
 
 echo Starting updated version...
 
-start "" cmd /c "timeout /t 2 >nul && start "" "%TARGET_EXE%""
+start "" cmd /c "timeout /t 2 >nul && \"%TARGET_EXE%\""
 
 exit /b 0
 
