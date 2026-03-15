@@ -22,8 +22,7 @@ setlocal EnableDelayedExpansion
 ::   10. If --update mode: wait for old process to exit, then restart
 :: ============================================================
 
-:: ── CONFIGURE THESE ──────────────────────────────────────────────────────────
-set REPO_URL=https://github.com/YOUR_USERNAME/YOUR_REPO.git
+set REPO_URL=https://github.com/gustaslaoq/Sols-RNG-Sniper.git
 set EXE_NAME=SlaoqSniper
 set PYTHON_MIN=3.10
 :: ─────────────────────────────────────────────────────────────────────────────
