@@ -186,7 +186,7 @@ RESIZE_M      = 6
 def resource_path(relative_path: str) -> str:
     """Resolve path for both dev mode and PyInstaller frozen mode.
     Checks assets/ subfolder first, then falls back to current dir / _MEIPASS."""
-    # when frozen by PyInstaller, _MEIPASS is the temp extraction dir
+    # When frozen by PyInstaller, _MEIPASS is the temp extraction dir
     try:
         base = sys._MEIPASS
     except AttributeError:
@@ -4175,7 +4175,34 @@ class MainWindow(QMainWindow):
 
 # ENTRY POINT
 
+def _close_other_instances():
+    current_pid  = os.getpid()
+    current_exe  = os.path.abspath(sys.executable if getattr(sys, "frozen", False)
+                                   else os.path.abspath(__file__))
+    exe_name     = Path(current_exe).name.lower()
+    killed       = 0
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                if proc.pid == current_pid:
+                    continue
+                proc_name = (proc.info.get("name") or "").lower()
+                proc_exe  = (proc.info.get("exe")  or "").lower()
+                if proc_name == exe_name or Path(proc_exe).name.lower() == exe_name:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                pass
+    except Exception:
+        pass
+    return killed
+
+
 def main():
+    _close_other_instances()
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
