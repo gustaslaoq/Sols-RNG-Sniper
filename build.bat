@@ -15,7 +15,42 @@ if /i "%~1"=="--update" (
     set "UPDATE_MODE=1"
     set "TARGET_EXE=%~2"
 )
-if "%TARGET_EXE%"=="" set "TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%.exe"
+if "%TARGET_EXE%"=="" (
+    set "_USE_SUBDIR=1"
+    set "_KNOWN=0"
+
+    for %%K in (
+        "%USERPROFILE%\Downloads"
+        "%USERPROFILE%\Desktop"
+        "%USERPROFILE%\OneDrive\Desktop"
+        "%PUBLIC%\Desktop"
+        "%USERPROFILE%\Documents"
+        "%USERPROFILE%\OneDrive\Documents"
+        "%USERPROFILE%"
+        "%TEMP%"
+        "%TMP%"
+        "C:\"
+        "D:\"
+    ) do (
+        if /i "%%~K"=="%SCRIPT_DIR:~0,-1%" set "_KNOWN=1"
+    )
+
+    if "!_KNOWN!"=="0" (
+        set "_FILECOUNT=0"
+        for %%F in ("%SCRIPT_DIR%*") do (
+            if /i not "%%~nxF"=="build.bat" set /a "_FILECOUNT+=1"
+        )
+        for /d %%D in ("%SCRIPT_DIR%*") do set /a "_FILECOUNT+=1"
+        if "!_FILECOUNT!"=="0" set "_USE_SUBDIR=0"
+    )
+
+    if "!_USE_SUBDIR!"=="1" (
+        if not exist "%SCRIPT_DIR%%EXE_NAME%" mkdir "%SCRIPT_DIR%%EXE_NAME%"
+        set "TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%\%EXE_NAME%.exe"
+    ) else (
+        set "TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%.exe"
+    )
+)
 
 echo.
 echo  ==========================================
