@@ -1674,10 +1674,10 @@ class SplashScreen(QWidget):
             self._step()
 
     def _do_update(self, sha: str):
-        self._task_lbl.setText("Build pipeline starting — closing app…")
+        self._task_lbl.setText("Build pipeline launched — closing app…")
         ok = _launch_bat_update()
         if ok:
-            QTimer.singleShot(2500, self._quit_for_update)
+            self._quit_for_update()
         else:
             self._task_lbl.setText("build.bat not found — skipping update…")
             self._bar_target = 0.0
