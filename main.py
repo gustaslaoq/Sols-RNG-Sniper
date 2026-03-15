@@ -2838,6 +2838,32 @@ class SettingsPage(QWidget):
         self._spn_pause.setSuffix(" s")
         pause_row.addWidget(self._spn_pause); pause_row.addStretch()
         lay.addLayout(pause_row)
+
+        lay.addWidget(hdiv())
+
+        biome_hdr = QHBoxLayout()
+        biome_hdr.addWidget(lbl("When biome ends:", "FieldLbl"))
+        biome_hdr.addWidget(HelpIcon(
+            "After joining a verified biome, the engine monitors it.\n"
+            "When the biome changes (ends or switches), this action fires:\n\n"
+            "• Do nothing — leave Roblox open as-is\n"
+            "• Close Roblox — kill the process immediately\n"
+            "• Return to home — close the game and relaunch the Roblox\n"
+            "  app to the home page, ready for the next snipe faster"))
+        biome_hdr.addStretch()
+        lay.addLayout(biome_hdr)
+
+        self._biome_leave_combo = QComboBox()
+        self._biome_leave_combo.addItems([
+            "Do nothing",
+            "Close Roblox",
+            "Return to home (faster next snipe)",
+        ])
+        action_map = {"none": 0, "kill": 1, "home": 2}
+        self._biome_leave_combo.setCurrentIndex(
+            action_map.get(getattr(self._cfg, "biome_leave_action", "none"), 0))
+        self._biome_leave_combo.currentIndexChanged.connect(self._schedule_save)
+        lay.addWidget(self._biome_leave_combo)
         return c
 
     def _sec_cooldown(self) -> QFrame:
@@ -3077,6 +3103,8 @@ class SettingsPage(QWidget):
         self._cfg.close_roblox_after_join = self._chk_close.isChecked()
         self._cfg.auto_join_delay_ms      = self._spn.value()
         self._cfg.pause_after_snipe_s     = self._spn_pause.value()
+        action_names = ["none", "kill", "home"]
+        self._cfg.biome_leave_action      = action_names[self._biome_leave_combo.currentIndex()]
         self._cfg.anti_bait_enabled       = self._chk_ab.isChecked()
         # Cooldown TTLs
         self._cfg.cooldown_guild_ttl      = float(self._spn_cd_guild.value())
