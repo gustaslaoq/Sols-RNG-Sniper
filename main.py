@@ -879,6 +879,17 @@ QComboBox QAbstractItemView {{
     background-color: rgba(231,76,60,0.06);
     border: 1px solid rgba(231,76,60,0.5);
 }}
+#PauseBtn {{
+    background-color: transparent; color: {C['yellow']};
+    border: 1px solid rgba(255,204,0,0.22); border-radius: 7px;
+    padding: 9px 22px; font-size: 12px; font-weight: 600;
+    min-width: 120px; min-height: 34px;
+}}
+#PauseBtn:hover {{
+    background-color: rgba(255,204,0,0.06);
+    border: 1px solid rgba(255,204,0,0.5);
+}}
+#PauseBtn:disabled {{ opacity: 0.35; }}
 #GhostBtn {{
     background-color: transparent; color: {C['muted']};
     border: 1px solid {C['border']}; border-radius: 6px;
@@ -1178,6 +1189,12 @@ class Bridge(QObject):
     def reload(self, cfg: SniperConfig):
         self.engine.reload_config(cfg)
 
+    def pause(self):
+        self.engine._paused = True
+
+    def resume(self):
+        self.engine._paused = False
+
     @property
     def snipe_count(self) -> int:    return self.engine.snipe_count
     @property
@@ -1433,18 +1450,19 @@ class SplashScreen(QWidget):
     finished = Signal()
 
     _TASKS = [
-        "Initializing modules…",
-        "Loading configuration…",
-        "Checking for updates…",
-        "Starting engine…",
-        "Ready.",
+        "Inicializando o ambiente de execução…",
+        "Carregando perfis e configurações salvas…",
+        "Verificando integridade dos assets…",
+        "Conectando ao sistema de monitoramento…",
+        "Preparando o motor de snipe…",
+        "Pronto.",
     ]
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(420, 260)
+        self.setFixedSize(420, 280)
 
         screen = QApplication.primaryScreen().geometry()
         self.move(
@@ -1452,19 +1470,23 @@ class SplashScreen(QWidget):
             screen.center().y() - self.height() // 2,
         )
 
-        self._opacity = 0.0
-        self._task_idx = 0
+        self._opacity   = 0.0
+        self._task_idx  = 0
+        self._bar_value = 0.0
+        self._bar_target = 0.0
+        self._slide_offset = 28.0
         self._build()
 
     def _build(self):
-        root = QWidget(self); root.setObjectName("SplashRoot")
-        root.setFixedSize(self.size())
-        root.setStyleSheet(
+        self._root = QWidget(self)
+        self._root.setObjectName("SplashRoot")
+        self._root.setFixedSize(self.size())
+        self._root.setStyleSheet(
             "QWidget#SplashRoot { background-color: #000000; border: 1px solid #1c1c1c; border-radius: 16px; }")
 
-        lay = QVBoxLayout(root)
-        lay.setContentsMargins(40, 40, 40, 32); lay.setSpacing(0)
-
+        outer = QVBoxLayout(self._root)
+        outer.setContentsMargins(40, 44, 40, 32)
+        outer.setSpacing(0)
 
         self._logo_lbl = QLabel()
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1475,43 +1497,61 @@ class SplashScreen(QWidget):
                 64, 64, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self._logo_lbl.setPixmap(px)
-        lay.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        lay.addSpacing(14)
+        outer.addSpacing(14)
 
-        name_lbl = QLabel(APP_NAME)
-        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        name_lbl.setStyleSheet("color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 3px; background: transparent;")
-        lay.addWidget(name_lbl)
+        self._name_lbl = QLabel(APP_NAME)
+        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._name_lbl.setStyleSheet(
+            "color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 3px; background: transparent;")
+        outer.addWidget(self._name_lbl)
 
-        ver_lbl = QLabel(f"v{APP_VERSION}")
-        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ver_lbl.setStyleSheet("color: #555; font-size: 10px; letter-spacing: 1px; background: transparent;")
-        lay.addWidget(ver_lbl)
+        self._ver_lbl = QLabel(f"v{APP_VERSION}")
+        self._ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._ver_lbl.setStyleSheet(
+            "color: #555; font-size: 10px; letter-spacing: 1px; background: transparent;")
+        outer.addWidget(self._ver_lbl)
 
-        lay.addStretch()
+        outer.addStretch()
 
-        self._bar = QProgressBar()
-        self._bar.setRange(0, len(self._TASKS))
-        self._bar.setValue(0)
-        self._bar.setTextVisible(False)
-        self._bar.setFixedHeight(4)
-        self._bar.setStyleSheet("""
-            QProgressBar { background-color: #111; border-radius: 2px; border: none; }
-            QProgressBar::chunk { background-color: #ffffff; border-radius: 2px; }
-        """)
-        lay.addWidget(self._bar)
+        self._bar_canvas = QWidget()
+        self._bar_canvas.setFixedHeight(4)
+        self._bar_canvas.setStyleSheet("background: transparent;")
+        outer.addWidget(self._bar_canvas)
 
-        lay.addSpacing(8)
+        outer.addSpacing(8)
 
         self._task_lbl = QLabel(self._TASKS[0])
         self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._task_lbl.setStyleSheet("color: #555; font-size: 10px; background: transparent;")
-        lay.addWidget(self._task_lbl)
+        outer.addWidget(self._task_lbl)
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(420)
-        self._timer.timeout.connect(self._step)
+        self._step_timer = QTimer(self)
+        self._step_timer.setInterval(480)
+        self._step_timer.timeout.connect(self._step)
+
+        self._smooth_timer = QTimer(self)
+        self._smooth_timer.setInterval(16)
+        self._smooth_timer.timeout.connect(self._tick_smooth)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not hasattr(self, '_bar_canvas'):
+            return
+        bar = self._bar_canvas
+        pos = bar.mapTo(self, QPoint(0, 0))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        total = bar.width()
+        filled = int(total * (self._bar_value / max(1, len(self._TASKS))))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#1a1a1a"))
+        painter.drawRoundedRect(pos.x(), pos.y(), total, 4, 2, 2)
+        if filled > 0:
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawRoundedRect(pos.x(), pos.y(), filled, 4, 2, 2)
+        painter.end()
 
     def start(self):
         self.show()
@@ -1520,35 +1560,52 @@ class SplashScreen(QWidget):
     def _fade_in(self):
         self.setWindowOpacity(0.0)
         self._fade_timer = QTimer(self)
-        self._fade_timer.setInterval(20)
+        self._fade_timer.setInterval(16)
         self._opacity = 0.0
         self._fade_timer.timeout.connect(self._tick_fade_in)
         self._fade_timer.start()
 
     def _tick_fade_in(self):
-        self._opacity = min(1.0, self._opacity + 0.08)
+        self._opacity = min(1.0, self._opacity + 0.07)
         self.setWindowOpacity(self._opacity)
+
+        ease = 1.0 - self._opacity
+        offset = self._slide_offset * (ease ** 2)
+        base_y = (self.height() - self._root.height()) // 2
+        self._root.move(0, base_y + int(offset))
+
         if self._opacity >= 1.0:
+            self._root.move(0, 0)
             self._fade_timer.stop()
-            self._timer.start()
+            self._smooth_timer.start()
+            self._step_timer.start()
+
+    def _tick_smooth(self):
+        diff = self._bar_target - self._bar_value
+        if abs(diff) < 0.01:
+            self._bar_value = self._bar_target
+        else:
+            self._bar_value += diff * 0.12
+        self.update()
 
     def _step(self):
         self._task_idx += 1
-        self._bar.setValue(self._task_idx)
+        self._bar_target = float(self._task_idx)
         if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
         if self._task_idx >= len(self._TASKS):
-            self._timer.stop()
-            QTimer.singleShot(300, self._fade_out)
+            self._step_timer.stop()
+            QTimer.singleShot(500, self._fade_out)
 
     def _fade_out(self):
+        self._smooth_timer.stop()
         self._fade_timer2 = QTimer(self)
-        self._fade_timer2.setInterval(20)
+        self._fade_timer2.setInterval(16)
         self._fade_timer2.timeout.connect(self._tick_fade_out)
         self._fade_timer2.start()
 
     def _tick_fade_out(self):
-        self._opacity = max(0.0, self._opacity - 0.1)
+        self._opacity = max(0.0, self._opacity - 0.09)
         self.setWindowOpacity(self._opacity)
         if self._opacity <= 0.0:
             self._fade_timer2.stop()
@@ -1999,6 +2056,7 @@ class Sidebar(QFrame):
 class DashboardPage(QWidget):
     start_requested       = Signal()
     stop_requested        = Signal()
+    pause_requested       = Signal()
     hotkey_config_changed = Signal(dict)
 
     def __init__(self):
@@ -2056,7 +2114,14 @@ class DashboardPage(QWidget):
         self._e.setFixedHeight(42); self._e.setEnabled(False)
         self._e.clicked.connect(self.stop_requested.emit)
 
-        br.addWidget(self._s); br.addWidget(self._e); br.addStretch()
+        self._p = QPushButton("  Pause Sniper")
+        self._p.setIcon(_svg_icon("pause", "#ffcc00", 16))
+        self._p.setObjectName("PauseBtn")
+        self._p.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._p.setFixedHeight(42); self._p.setEnabled(False)
+        self._p.clicked.connect(self.pause_requested.emit)
+
+        br.addWidget(self._s); br.addWidget(self._e); br.addWidget(self._p); br.addStretch()
         lay.addLayout(br)
 
         # Recent activity log
@@ -2163,8 +2228,27 @@ class DashboardPage(QWidget):
             "pause_dur":  self._ps_dur.value(),
         })
 
-    def on_start(self): self._s.setEnabled(False); self._e.setEnabled(True)
-    def on_stop(self):  self._s.setEnabled(True);  self._e.setEnabled(False)
+    def on_start(self):
+        self._s.setEnabled(False)
+        self._e.setEnabled(True)
+        self._p.setEnabled(True)
+
+    def on_stop(self):
+        self._s.setEnabled(True)
+        self._e.setEnabled(False)
+        self._p.setEnabled(False)
+        self._p.setText("  Pause Sniper")
+        self._p.setIcon(_svg_icon("pause", "#ffcc00", 16))
+        self.c_ping.set_value("—")
+        self.c_uptime.set_value("—")
+
+    def on_pause(self):
+        self._p.setText("  Resume Sniper")
+        self._p.setIcon(_svg_icon("play", "#ffcc00", 16))
+
+    def on_resume(self):
+        self._p.setText("  Pause Sniper")
+        self._p.setIcon(_svg_icon("pause", "#ffcc00", 16))
 
     def append(self, e: LogEntry, dev: bool = False):
         if e.dev_only and not dev:
@@ -3432,6 +3516,7 @@ class MainWindow(QMainWindow):
         self._sb.page_changed.connect(self._stk.setCurrentIndex)
         self._pd.start_requested.connect(self._start)
         self._pd.stop_requested.connect(self._stop)
+        self._pd.pause_requested.connect(self._toggle_manual_pause)
         self._pd.hotkey_config_changed.connect(self._update_hotkeys)
         self._pse.config_saved.connect(self._on_cfg)
         self._pn.config_changed.connect(lambda: self._br.reload(self._cfg) if self._br else None)
@@ -3560,18 +3645,15 @@ class MainWindow(QMainWindow):
         if self._br:
             self._br.stop()
             self._br = None
-        self._run    = False
+        self._run       = False
         self._is_paused = False
         self._pd.on_stop()
 
-        # Explicit badge: stopped
         self._tb.badge.set_state("off")
         self._pd.badge.set_state("off")
         self._pd.c_status.set_value("STOPPED")
 
-        # Custom Notification
         self._tray_notify("Sniper Stopped", "Engine has been shut down.", get_tray_icon_img())
-        # Webhook
         self._send_webhook("stop")
 
     def _on_log(self, e: LogEntry):
@@ -3583,18 +3665,18 @@ class MainWindow(QMainWindow):
         self._send_webhook("biome", expected=expected, detected=detected, match=matched)
 
     def _on_engine_paused(self, paused: bool):
-        """Auto-pause triggered by engine after a snipe."""
         if paused:
             self._tb.badge.set_state("idle")
             self._pd.badge.set_state("idle")
-            self._pd.c_status.set_value("AUTO-PAUSED")
-            e = LogEntry(LogLevel.WARN, f"[ENGINE] Auto-paused after snipe.")
+            self._pd.c_status.set_value("AUTO-PAUSADO")
+            e = LogEntry(LogLevel.WARN, "[ENGINE] Auto-pausado após snipe.")
             self._pl.append(e); self._pd.append(e, self._dev)
         else:
-            self._tb.badge.set_state("on")
-            self._pd.badge.set_state("on")
-            self._pd.c_status.set_value("ON")
-            e = LogEntry(LogLevel.INFO, "[ENGINE] Auto-pause ended — scanning resumed.")
+            if not self._is_paused:
+                self._tb.badge.set_state("on")
+                self._pd.badge.set_state("on")
+                self._pd.c_status.set_value("ON")
+            e = LogEntry(LogLevel.INFO, "[ENGINE] Auto-pausa encerrada — escaneando.")
             self._pl.append(e); self._pd.append(e, self._dev)
 
     def _on_st(self, s: EngineStatus):
@@ -3708,20 +3790,33 @@ class MainWindow(QMainWindow):
         else:         self._start()
 
     def _hk_pause_action(self):
-        self._toggle_pause_state()
+        self._toggle_manual_pause()
 
     def _toggle_pause_state(self):
+        self._toggle_manual_pause()
+
+    def _toggle_manual_pause(self):
+        if not self._run:
+            return
         self._is_paused = not self._is_paused
         if self._is_paused:
-            self._pl.append(LogEntry(LogLevel.WARN, "[HOTKEY] Sniper Paused."))
-            if self._br: self._br.stop(); self._br = None
-            # Badge → paused (yellow/idle)
+            if self._br:
+                self._br.pause()
+            e = LogEntry(LogLevel.WARN, "[ENGINE] Sniper manualmente pausado.")
+            self._pl.append(e); self._pd.append(e, self._dev)
             self._tb.badge.set_state("idle")
             self._pd.badge.set_state("idle")
-            self._pd.c_status.set_value("PAUSED")
+            self._pd.c_status.set_value("PAUSADO")
+            self._pd.on_pause()
         else:
-            self._pl.append(LogEntry(LogLevel.INFO, "[HOTKEY] Sniper Resumed."))
-            if self._run: self._start()
+            if self._br:
+                self._br.resume()
+            e = LogEntry(LogLevel.INFO, "[ENGINE] Sniper retomado — escaneando.")
+            self._pl.append(e); self._pd.append(e, self._dev)
+            self._tb.badge.set_state("on")
+            self._pd.badge.set_state("on")
+            self._pd.c_status.set_value("ON")
+            self._pd.on_resume()
 
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.MouseButton.LeftButton:
