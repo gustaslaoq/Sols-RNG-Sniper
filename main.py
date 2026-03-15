@@ -170,6 +170,7 @@ APP_NAME      = "SLAOQ'S SOL'S RNG SNIPER"
 APP_VERSION   = "1.0"
 GITHUB_REPO   = "gustaslaoq/Sols-RNG-Sniper"
 EXE_NAME      = "SlaoqSniper"
+_UPDATE_TRIGGERED = False
 WIN_W         = 1200
 WIN_H         = 800
 WIN_MIN_W     = 980
@@ -1767,6 +1768,11 @@ def _ensure_bat() -> Optional[Path]:
         return None
 
 def _launch_bat_update() -> bool:
+    global _UPDATE_TRIGGERED
+    if _UPDATE_TRIGGERED:
+        return False
+    _UPDATE_TRIGGERED = True
+
     bat = _ensure_bat()
     if not bat:
         print("[Updater] build.bat not available.")
@@ -3648,7 +3654,8 @@ class MainWindow(QMainWindow):
         # Auto-update
         self._updater = AutoUpdater(self)
         self._updater.update_available.connect(self._on_update_available)
-        QTimer.singleShot(3000, self._updater.check_async)
+        if not _UPDATE_TRIGGERED:
+            QTimer.singleShot(3000, self._updater.check_async)
 
         # System tray for desktop notifications
         self._tray: Optional[QSystemTrayIcon] = None
