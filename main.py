@@ -735,15 +735,15 @@ class WebhookSender:
             keyword          = kwargs.get("keyword", "")
             ts_unix          = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
-            # Author field — avatar + DisplayName (@username)
+            # Author field — avatar icon + "Author: DisplayName (@username)"
             author_tag = f"@{author_name}" if author_name != author_display else f"@{author_display}"
             embed["author"] = {
                 "name":     f"Author: {author_display} ({author_tag})",
                 "icon_url": author_avatar if author_avatar else self.logo_url,
             }
 
-            # Description: big join link then spacer
-            desc_lines = [f"> #{profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
+            # Description: header + join link
+            desc_lines = [f"> # {profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
             if roblox_web_url and not roblox_web_url.startswith("roblox://"):
                 desc_lines.append(f"## [Join Private Server Link]({roblox_web_url})")
             elif jump_url:
@@ -792,38 +792,25 @@ class WebhookSender:
             display_name  = kwargs.get("display_name", username)
             user_id       = kwargs.get("user_id", "?")
             avatar_url    = kwargs.get("avatar_url", "")
-            account_age   = kwargs.get("account_age", "?")
-            is_new_acct   = kwargs.get("is_new_account", None)
+            creation_date = kwargs.get("creation_date", "?")   # e.g. "6 years ago"
             profile_url   = kwargs.get("profile_url", "")
-            server_linked = kwargs.get("server_linked", None)  # True/False/None
 
-            embed["title"]       = "[ Private Server Owner Info ]"
-            embed["color"]       = 0xFFFFFF
+            embed["title"] = "[ Private Server Owner Info ]"
+            embed["color"] = 0xFFFFFF
             if avatar_url:
                 embed["thumbnail"] = {"url": avatar_url}
 
-            # Username field: "display_name (username)"
+            # Username: "display_name (username)" or just username if identical
             uname_val = f"{display_name} ({username})" if display_name != username else username
-            fields = [
-                {"name": "Username",    "value": uname_val, "inline": True},
-                {"name": "User ID",     "value": user_id,   "inline": True},
-                {"name": "Account Age", "value": account_age, "inline": True},
+
+            embed["fields"] = [
+                {"name": "Username",       "value": uname_val,    "inline": True},
+                {"name": "User ID",        "value": str(user_id), "inline": True},
+                {"name": "Creation Date",  "value": creation_date, "inline": False},
             ]
-
-            # New account check (alt detection via account age)
-            if is_new_acct is not None:
-                new_val = "True" if is_new_acct else "False"
-                fields.append({"name": "New Account", "value": new_val, "inline": True})
-
-            # BloxLink server verification
-            if server_linked is not None:
-                verified_val = "Verified" if server_linked else "Not Verified"
-                fields.append({"name": "Server Linked", "value": verified_val, "inline": True})
-
             if profile_url:
-                fields.append({"name": "Profile", "value": profile_url, "inline": False})
-
-            embed["fields"] = fields
+                embed["fields"].append(
+                    {"name": "Profile", "value": profile_url, "inline": False})
 
         else:
             return
@@ -1380,9 +1367,8 @@ class Bridge(QObject):
 
         place_id = snipe_data.get("place_id", "")
         code     = snipe_data.get("code", "")
-        author_discord_id = snipe_data.get("author_id", "")
 
-        if not place_id or not code:
+        if not place_id or not code or place_id == "0":
             return
 
         try:
@@ -1393,25 +1379,46 @@ class Bridge(QObject):
             try:
                 async with sess.get(
                     f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
-                    timeout=aiohttp.ClientTimeout(total=6),
+                    timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
                     if r.status == 200:
                         universe_id = (await r.json()).get("universeId")
             except Exception:
                 pass
 
-            # ── Step 2: get private server owner user ID ──────────────────
+            if not universe_id:
+                return
+
+            # ── Step 2: get private server owner via Games API ────────────
+            # Roblox exposes the VIP server owner through the following endpoint.
             owner_id = None
-            if universe_id:
+            try:
+                async with sess.get(
+                    f"https://games.roblox.com/v1/games/{universe_id}/private-servers/access"
+                    f"?privateServerLinkCode={code}",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    if r.status == 200:
+                        data      = await r.json()
+                        owner_obj = data.get("owner") or {}
+                        owner_id  = str(owner_obj.get("id") or "").strip()
+            except Exception:
+                pass
+
+            # Fallback: try v2 private-servers route
+            if not owner_id:
                 try:
                     async with sess.get(
-                        f"https://games.roblox.com/v2/private-servers/{code}",
-                        timeout=aiohttp.ClientTimeout(total=6),
+                        f"https://games.roblox.com/v2/universes/{universe_id}"
+                        f"/private-servers?limit=10",
+                        timeout=aiohttp.ClientTimeout(total=8),
                     ) as r:
                         if r.status == 200:
-                            data = await r.json()
-                            owner = data.get("owner") or {}
-                            owner_id = str(owner.get("id", "") or "")
+                            items = (await r.json()).get("data", [])
+                            for item in items:
+                                if str(item.get("privateServerLinkCode", "")) == code:
+                                    owner_id = str((item.get("owner") or {}).get("id", ""))
+                                    break
                 except Exception:
                     pass
 
@@ -1421,11 +1428,11 @@ class Bridge(QObject):
             # ── Step 3: get Roblox user profile ──────────────────────────
             username     = owner_id
             display_name = owner_id
-            created_iso  = None
+            created_iso  = ""
             try:
                 async with sess.get(
                     f"https://users.roblox.com/v1/users/{owner_id}",
-                    timeout=aiohttp.ClientTimeout(total=6),
+                    timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
                     if r.status == 200:
                         u = await r.json()
@@ -1435,64 +1442,43 @@ class Bridge(QObject):
             except Exception:
                 pass
 
-            # ── Step 4: get avatar headshot URL ───────────────────────────
+            # ── Step 4: get avatar headshot ───────────────────────────────
             avatar_url = ""
             try:
                 async with sess.get(
                     f"https://thumbnails.roblox.com/v1/users/avatar-headshot"
                     f"?userIds={owner_id}&size=150x150&format=Png&isCircular=false",
-                    timeout=aiohttp.ClientTimeout(total=6),
+                    timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
                     if r.status == 200:
-                        data = await r.json()
-                        imgs = (data.get("data") or [{}])
+                        imgs = (await r.json()).get("data") or []
                         avatar_url = imgs[0].get("imageUrl", "") if imgs else ""
             except Exception:
                 pass
 
-            # ── Step 5: account age + new account flag ────────────────────
-            account_age_str = "?"
-            is_new_account  = None
+            # ── Step 5: format creation date ─────────────────────────────
+            creation_date = "Unknown"
             if created_iso:
                 try:
                     import datetime as _dt
-                    created_dt  = _dt.datetime.fromisoformat(
+                    created_dt = _dt.datetime.fromisoformat(
                         created_iso.replace("Z", "+00:00"))
-                    now_dt      = _dt.datetime.now(_dt.timezone.utc)
-                    delta       = now_dt - created_dt
-                    years       = delta.days // 365
-                    months      = (delta.days % 365) // 30
+                    now_dt = _dt.datetime.now(_dt.timezone.utc)
+                    delta  = now_dt - created_dt
+                    years  = delta.days // 365
+                    months = (delta.days % 365) // 30
+                    days   = delta.days % 30
+                    # Friendly string: "6 years ago", "3 months ago", "12 days ago"
                     if years >= 1:
-                        account_age_str = f"{years} year{'s' if years != 1 else ''} ago"
+                        creation_date = f"{years} year{'s' if years != 1 else ''} ago"
                     elif months >= 1:
-                        account_age_str = f"{months} month{'s' if months != 1 else ''} ago"
+                        creation_date = f"{months} month{'s' if months != 1 else ''} ago"
                     else:
-                        account_age_str = f"{delta.days} days ago"
-                    is_new_account = delta.days < 365
+                        creation_date = f"{max(1, days)} day{'s' if days != 1 else ''} ago"
                 except Exception:
-                    pass
+                    creation_date = created_iso[:10] if created_iso else "Unknown"
 
-            # ── Step 6: BloxLink verification (optional) ──────────────────
-            server_linked = None
-            bl_key     = self._cfg.bloxlink_api_key.strip()
-            bl_guild   = self._cfg.bloxlink_guild_id.strip()
-            if bl_key and bl_guild and author_discord_id:
-                try:
-                    async with sess.get(
-                        f"https://api.blox.link/v4/public/guilds/{bl_guild}"
-                        f"/discord-to-roblox/{author_discord_id}",
-                        headers={"Authorization": bl_key},
-                        timeout=aiohttp.ClientTimeout(total=6),
-                    ) as r:
-                        if r.status == 200:
-                            bl_data = await r.json()
-                            server_linked = bool(bl_data.get("robloxId"))
-                        else:
-                            server_linked = False
-                except Exception:
-                    server_linked = None
-
-            # ── Step 7: send webhook ──────────────────────────────────────
+            # ── Step 6: send webhook embed ────────────────────────────────
             sender = WebhookSender(sess, self._cfg.webhook)
             await sender.send(
                 "owner_info",
@@ -1500,10 +1486,8 @@ class Bridge(QObject):
                 display_name=display_name,
                 user_id=owner_id,
                 avatar_url=avatar_url,
-                account_age=account_age_str,
-                is_new_account=is_new_account,
+                creation_date=creation_date,
                 profile_url=f"https://www.roblox.com/users/{owner_id}/profile",
-                server_linked=server_linked,
             )
         except Exception:
             pass
@@ -3908,54 +3892,15 @@ class NotificationsPage(QWidget):
         self._chk_owner.toggled.connect(self._save_owner_cfg)
         lay.addWidget(self._chk_owner)
 
-        lay.addWidget(hdiv())
         lay.addWidget(lbl(
-            "BloxLink integration (optional)\n"
-            "If configured, also checks whether the Discord user who posted the link is\n"
-            "verified in your target server via BloxLink.",
-            "FieldHint"))
-
-        # BloxLink API key
-        bl_key_hdr = QHBoxLayout()
-        bl_key_hdr.addWidget(lbl("BloxLink API Key", "FieldLbl"))
-        bl_key_hdr.addWidget(HelpIcon(
-            "Get your API key at blox.link/dashboard → API Keys.\n"
-            "Leave empty to skip BloxLink verification."))
-        bl_key_hdr.addStretch()
-        lay.addLayout(bl_key_hdr)
-        self._bl_key = QLineEdit(getattr(self._cfg, "bloxlink_api_key", ""))
-        self._bl_key.setPlaceholderText("bloxlink API key…")
-        self._bl_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._bl_key.textChanged.connect(self._save_owner_cfg)
-        show_bl = QCheckBox("Show")
-        show_bl.toggled.connect(lambda v: self._bl_key.setEchoMode(
-            QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
-        bl_row = QHBoxLayout(); bl_row.addWidget(self._bl_key); bl_row.addWidget(show_bl)
-        lay.addLayout(bl_row)
-
-        # Server ID for BloxLink
-        gid_hdr = QHBoxLayout()
-        gid_hdr.addWidget(lbl("Server ID (for BloxLink check)", "FieldLbl"))
-        gid_hdr.addWidget(HelpIcon(
-            "The Discord server ID to check BloxLink verification against.\n"
-            "e.g. the Sol's RNG main server ID."))
-        gid_hdr.addStretch()
-        lay.addLayout(gid_hdr)
-        self._bl_guild = QLineEdit(getattr(self._cfg, "bloxlink_guild_id", ""))
-        self._bl_guild.setPlaceholderText("Discord server ID…")
-        self._bl_guild.textChanged.connect(self._save_owner_cfg)
-        lay.addWidget(self._bl_guild)
-
-        lay.addWidget(lbl(
-            "Note: owner lookup requires the private server to be publicly accessible\n"
-            "via the Roblox API. Some servers may not return owner info.",
+            "Sends a separate embed after each snipe with the server owner's\n"
+            "username, user ID, account creation date, and a profile link.\n\n"
+            "Requires the private server to be publicly accessible via the Roblox API.",
             "FieldHint"))
         return c
 
     def _save_owner_cfg(self):
         self._cfg.owner_info_enabled = self._chk_owner.isChecked()
-        self._cfg.bloxlink_api_key   = self._bl_key.text().strip()
-        self._cfg.bloxlink_guild_id  = self._bl_guild.text().strip()
         self._cfg.save()
         self.config_changed.emit()
 
@@ -4886,7 +4831,7 @@ class MainWindow(QMainWindow):
         self._pd.c_snipes.set_value(str(n))
 
         profile_name = data.get("profile", "Unknown")
-        title = f" — {profile_name}"
+        title = f"Snipped — {profile_name}"
         msg   = f"Detected in server. ({n} total)"
         self._tray_notify(title, msg, get_tray_icon_img())
 
