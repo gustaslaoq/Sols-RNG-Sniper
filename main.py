@@ -735,37 +735,35 @@ class WebhookSender:
             keyword          = kwargs.get("keyword", "")
             ts_unix          = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
-            # ── author section: avatar icon + "displayName (@username)" ──
-            # (this is the top "header" of the Discord embed, not a body field)
+            # Author field — avatar + DisplayName (@username)
             author_tag = f"@{author_name}" if author_name != author_display else f"@{author_display}"
             embed["author"] = {
-                "name":     f"{author_display} ({author_tag})",
+                "name":     f"Author: {author_display} ({author_tag})",
                 "icon_url": author_avatar if author_avatar else self.logo_url,
             }
-            # No title, no thumbnail
 
-            # ── description ───────────────────────────────────────────────
-            desc_lines = [f"> # Snipped - {profile_name} (<t:{ts_unix}:R>)"]
-            desc_lines.append("")   # blank line spacer
-
-            if jump_url:
-                desc_lines.append(f"[jump to message]({jump_url})")
-
-            if keyword:
-                desc_lines.append(f"Keyword Detected: `{keyword}`")
-
-            if raw_msg:
-                desc_lines.append(f"```\n{raw_msg[:900]}\n```")
-
+            # Description: big join link then spacer
+            desc_lines = [f"{profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
+            if roblox_web_url and not roblox_web_url.startswith("roblox://"):
+                desc_lines.append(f"[ [Join Private Server Link]({roblox_web_url}) ]")
+            elif jump_url:
+                desc_lines.append(f"[ [Jump to Original Message]({jump_url}) ]")
             embed["description"] = "\n".join(desc_lines)
             embed["color"]       = 0xFFFFFF
 
-            # ── action button: Open in Roblox (web URL, not roblox:// scheme) ──
-            if roblox_web_url and not roblox_web_url.startswith("roblox://"):
-                components = [{"type": 1, "components": [{
-                    "type": 2, "label": "Open in Roblox", "style": 5,
-                    "url": roblox_web_url,
-                }]}]
+            # Inline fields: Keyword Detected | Profile
+            kw_val      = f'"{keyword}"' if keyword else "—"
+            profile_val = f"— {profile_name.upper()} —"
+            embed["fields"] = [
+                {"name": "Keyword Detected", "value": kw_val,      "inline": True},
+                {"name": "Profile",          "value": profile_val, "inline": True},
+            ]
+            if raw_msg:
+                embed["fields"].append({
+                    "name":   "Message Content",
+                    "value":  f"*{raw_msg[:900]}*",
+                    "inline": False,
+                })
 
         elif event_type == "biome":
             if not self.config.on_biome:
@@ -786,6 +784,46 @@ class WebhookSender:
             uname    = kwargs.get("username", "?")
             embed["description"] = f"**{uid} (@{uname})** has been blacklisted for deleting their message."
             embed["color"]       = 0xc0392b
+
+        elif event_type == "owner_info":
+            if not getattr(self.config, "on_owner_info", True):
+                return
+            username      = kwargs.get("username", "?")
+            display_name  = kwargs.get("display_name", username)
+            user_id       = kwargs.get("user_id", "?")
+            avatar_url    = kwargs.get("avatar_url", "")
+            account_age   = kwargs.get("account_age", "?")
+            is_new_acct   = kwargs.get("is_new_account", None)
+            profile_url   = kwargs.get("profile_url", "")
+            server_linked = kwargs.get("server_linked", None)  # True/False/None
+
+            embed["title"]       = "[ Private Server Owner Info ]"
+            embed["color"]       = 0xFFFFFF
+            if avatar_url:
+                embed["thumbnail"] = {"url": avatar_url}
+
+            # Username field: "display_name (username)"
+            uname_val = f"{display_name} ({username})" if display_name != username else username
+            fields = [
+                {"name": "Username",    "value": uname_val, "inline": True},
+                {"name": "User ID",     "value": user_id,   "inline": True},
+                {"name": "Account Age", "value": account_age, "inline": True},
+            ]
+
+            # New account check (alt detection via account age)
+            if is_new_acct is not None:
+                new_val = "True" if is_new_acct else "False"
+                fields.append({"name": "New Account", "value": new_val, "inline": True})
+
+            # BloxLink server verification
+            if server_linked is not None:
+                verified_val = "Verified" if server_linked else "Not Verified"
+                fields.append({"name": "Server Linked", "value": verified_val, "inline": True})
+
+            if profile_url:
+                fields.append({"name": "Profile", "value": profile_url, "inline": False})
+
+            embed["fields"] = fields
 
         else:
             return
@@ -1299,6 +1337,9 @@ class Bridge(QObject):
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._send_snipe_webhook(data), self._loop)
+                # Owner info lookup (async, non-blocking)
+                asyncio.run_coroutine_threadsafe(
+                    self._fetch_and_send_owner_info(data), self._loop)
 
         def _on_biome(exp: str, det: str, ok: bool):
             hist.update_last_biome(ok)
@@ -1327,6 +1368,143 @@ class Bridge(QObject):
             sess   = await self._get_webhook_session()
             sender = WebhookSender(sess, self._cfg.webhook)
             await sender.send(event_type)
+        except Exception:
+            pass
+
+    async def _fetch_and_send_owner_info(self, snipe_data: dict):
+        """Fetch private server owner from Roblox API and send an owner_info webhook."""
+        if not self._cfg.owner_info_enabled:
+            return
+        if not self._cfg.webhook.enabled or not self._cfg.webhook.url:
+            return
+
+        place_id = snipe_data.get("place_id", "")
+        code     = snipe_data.get("code", "")
+        author_discord_id = snipe_data.get("author_id", "")
+
+        if not place_id or not code:
+            return
+
+        try:
+            sess = await self._get_webhook_session()
+
+            # ── Step 1: resolve universe ID from place ID ─────────────────
+            universe_id = None
+            try:
+                async with sess.get(
+                    f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
+                    timeout=aiohttp.ClientTimeout(total=6),
+                ) as r:
+                    if r.status == 200:
+                        universe_id = (await r.json()).get("universeId")
+            except Exception:
+                pass
+
+            # ── Step 2: get private server owner user ID ──────────────────
+            owner_id = None
+            if universe_id:
+                try:
+                    async with sess.get(
+                        f"https://games.roblox.com/v2/private-servers/{code}",
+                        timeout=aiohttp.ClientTimeout(total=6),
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            owner = data.get("owner") or {}
+                            owner_id = str(owner.get("id", "") or "")
+                except Exception:
+                    pass
+
+            if not owner_id:
+                return
+
+            # ── Step 3: get Roblox user profile ──────────────────────────
+            username     = owner_id
+            display_name = owner_id
+            created_iso  = None
+            try:
+                async with sess.get(
+                    f"https://users.roblox.com/v1/users/{owner_id}",
+                    timeout=aiohttp.ClientTimeout(total=6),
+                ) as r:
+                    if r.status == 200:
+                        u = await r.json()
+                        username     = u.get("name", owner_id)
+                        display_name = u.get("displayName", username)
+                        created_iso  = u.get("created", "")
+            except Exception:
+                pass
+
+            # ── Step 4: get avatar headshot URL ───────────────────────────
+            avatar_url = ""
+            try:
+                async with sess.get(
+                    f"https://thumbnails.roblox.com/v1/users/avatar-headshot"
+                    f"?userIds={owner_id}&size=150x150&format=Png&isCircular=false",
+                    timeout=aiohttp.ClientTimeout(total=6),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        imgs = (data.get("data") or [{}])
+                        avatar_url = imgs[0].get("imageUrl", "") if imgs else ""
+            except Exception:
+                pass
+
+            # ── Step 5: account age + new account flag ────────────────────
+            account_age_str = "?"
+            is_new_account  = None
+            if created_iso:
+                try:
+                    import datetime as _dt
+                    created_dt  = _dt.datetime.fromisoformat(
+                        created_iso.replace("Z", "+00:00"))
+                    now_dt      = _dt.datetime.now(_dt.timezone.utc)
+                    delta       = now_dt - created_dt
+                    years       = delta.days // 365
+                    months      = (delta.days % 365) // 30
+                    if years >= 1:
+                        account_age_str = f"{years} year{'s' if years != 1 else ''} ago"
+                    elif months >= 1:
+                        account_age_str = f"{months} month{'s' if months != 1 else ''} ago"
+                    else:
+                        account_age_str = f"{delta.days} days ago"
+                    is_new_account = delta.days < 365
+                except Exception:
+                    pass
+
+            # ── Step 6: BloxLink verification (optional) ──────────────────
+            server_linked = None
+            bl_key     = self._cfg.bloxlink_api_key.strip()
+            bl_guild   = self._cfg.bloxlink_guild_id.strip()
+            if bl_key and bl_guild and author_discord_id:
+                try:
+                    async with sess.get(
+                        f"https://api.blox.link/v4/public/guilds/{bl_guild}"
+                        f"/discord-to-roblox/{author_discord_id}",
+                        headers={"Authorization": bl_key},
+                        timeout=aiohttp.ClientTimeout(total=6),
+                    ) as r:
+                        if r.status == 200:
+                            bl_data = await r.json()
+                            server_linked = bool(bl_data.get("robloxId"))
+                        else:
+                            server_linked = False
+                except Exception:
+                    server_linked = None
+
+            # ── Step 7: send webhook ──────────────────────────────────────
+            sender = WebhookSender(sess, self._cfg.webhook)
+            await sender.send(
+                "owner_info",
+                username=username,
+                display_name=display_name,
+                user_id=owner_id,
+                avatar_url=avatar_url,
+                account_age=account_age_str,
+                is_new_account=is_new_account,
+                profile_url=f"https://www.roblox.com/users/{owner_id}/profile",
+                server_linked=server_linked,
+            )
         except Exception:
             pass
 
@@ -3625,6 +3803,7 @@ class NotificationsPage(QWidget):
         wl.setContentsMargins(0, 2, 6, 10); wl.setSpacing(14)
         wl.addWidget(self._sec_desktop())
         wl.addWidget(self._sec_webhook())
+        wl.addWidget(self._sec_owner_info())
         wl.addStretch()
         scroll.setWidget(wrap); lay.addWidget(scroll)
 
@@ -3682,12 +3861,14 @@ class NotificationsPage(QWidget):
         self._wh_on_biome  = QCheckBox("Biome verification")
         self._wh_on_start  = QCheckBox("Sniper started")
         self._wh_on_stop   = QCheckBox("Sniper stopped")
+        self._wh_on_owner  = QCheckBox("Private server owner info")
         self._wh_on_snipe.setChecked(wh.on_snipe)
         self._wh_on_biome.setChecked(wh.on_biome)
         self._wh_on_start.setChecked(wh.on_start)
         self._wh_on_stop.setChecked(wh.on_stop)
+        self._wh_on_owner.setChecked(getattr(wh, "on_owner_info", True))
         for chk in (self._wh_on_snipe, self._wh_on_biome,
-                    self._wh_on_start, self._wh_on_stop):
+                    self._wh_on_start, self._wh_on_stop, self._wh_on_owner):
             chk.toggled.connect(self._save_webhook); lay.addWidget(chk)
 
         lay.addWidget(hdiv())
@@ -3715,6 +3896,69 @@ class NotificationsPage(QWidget):
         lay.addWidget(test_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         return c
 
+    def _sec_owner_info(self) -> QFrame:
+        c, lay = self._card("Private Server Owner Info")
+        lay.addWidget(lbl(
+            "When a snipe fires, look up the Roblox account that owns the private server\n"
+            "and send a summary embed to your webhook.",
+            "FieldHint"))
+
+        self._chk_owner = QCheckBox("Enable private server owner lookup")
+        self._chk_owner.setChecked(getattr(self._cfg, "owner_info_enabled", False))
+        self._chk_owner.toggled.connect(self._save_owner_cfg)
+        lay.addWidget(self._chk_owner)
+
+        lay.addWidget(hdiv())
+        lay.addWidget(lbl(
+            "BloxLink integration (optional)\n"
+            "If configured, also checks whether the Discord user who posted the link is\n"
+            "verified in your target server via BloxLink.",
+            "FieldHint"))
+
+        # BloxLink API key
+        bl_key_hdr = QHBoxLayout()
+        bl_key_hdr.addWidget(lbl("BloxLink API Key", "FieldLbl"))
+        bl_key_hdr.addWidget(HelpIcon(
+            "Get your API key at blox.link/dashboard → API Keys.\n"
+            "Leave empty to skip BloxLink verification."))
+        bl_key_hdr.addStretch()
+        lay.addLayout(bl_key_hdr)
+        self._bl_key = QLineEdit(getattr(self._cfg, "bloxlink_api_key", ""))
+        self._bl_key.setPlaceholderText("bloxlink API key…")
+        self._bl_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._bl_key.textChanged.connect(self._save_owner_cfg)
+        show_bl = QCheckBox("Show")
+        show_bl.toggled.connect(lambda v: self._bl_key.setEchoMode(
+            QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
+        bl_row = QHBoxLayout(); bl_row.addWidget(self._bl_key); bl_row.addWidget(show_bl)
+        lay.addLayout(bl_row)
+
+        # Server ID for BloxLink
+        gid_hdr = QHBoxLayout()
+        gid_hdr.addWidget(lbl("Server ID (for BloxLink check)", "FieldLbl"))
+        gid_hdr.addWidget(HelpIcon(
+            "The Discord server ID to check BloxLink verification against.\n"
+            "e.g. the Sol's RNG main server ID."))
+        gid_hdr.addStretch()
+        lay.addLayout(gid_hdr)
+        self._bl_guild = QLineEdit(getattr(self._cfg, "bloxlink_guild_id", ""))
+        self._bl_guild.setPlaceholderText("Discord server ID…")
+        self._bl_guild.textChanged.connect(self._save_owner_cfg)
+        lay.addWidget(self._bl_guild)
+
+        lay.addWidget(lbl(
+            "Note: owner lookup requires the private server to be publicly accessible\n"
+            "via the Roblox API. Some servers may not return owner info.",
+            "FieldHint"))
+        return c
+
+    def _save_owner_cfg(self):
+        self._cfg.owner_info_enabled = self._chk_owner.isChecked()
+        self._cfg.bloxlink_api_key   = self._bl_key.text().strip()
+        self._cfg.bloxlink_guild_id  = self._bl_guild.text().strip()
+        self._cfg.save()
+        self.config_changed.emit()
+
     def _on_ping_type(self, idx: int):
         self._ping_target_row.setVisible(idx in (1, 2))
         self._save_webhook()
@@ -3722,14 +3966,15 @@ class NotificationsPage(QWidget):
     def _save_webhook(self):
         ping_names = ["none", "role", "user"]
         wh = self._cfg.webhook
-        wh.url         = self._wh_url.text().strip()
-        wh.enabled     = self._wh_enabled.isChecked()
-        wh.on_snipe    = self._wh_on_snipe.isChecked()
-        wh.on_biome    = self._wh_on_biome.isChecked()
-        wh.on_start    = self._wh_on_start.isChecked()
-        wh.on_stop     = self._wh_on_stop.isChecked()
-        wh.ping_type   = ping_names[self._ping_combo.currentIndex()]
-        wh.ping_target = self._ping_target.text().strip()
+        wh.url           = self._wh_url.text().strip()
+        wh.enabled       = self._wh_enabled.isChecked()
+        wh.on_snipe      = self._wh_on_snipe.isChecked()
+        wh.on_biome      = self._wh_on_biome.isChecked()
+        wh.on_start      = self._wh_on_start.isChecked()
+        wh.on_stop       = self._wh_on_stop.isChecked()
+        wh.on_owner_info = self._wh_on_owner.isChecked()
+        wh.ping_type     = ping_names[self._ping_combo.currentIndex()]
+        wh.ping_target   = self._ping_target.text().strip()
         self._cfg.save()
         self.config_changed.emit()
 
@@ -3879,13 +4124,34 @@ class BlacklistPage(QWidget):
             "When triggered, an embed is sent to your webhook:\n"
             "  user_id (@username) has been blacklisted for deleting their message.",
             "FieldHint"))
+
+        # Auto-save status indicator
+        save_row = QHBoxLayout()
+        self._bl_save_lbl = QLabel("")
+        self._bl_save_lbl.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
+        save_row.addStretch(); save_row.addWidget(self._bl_save_lbl)
+        cfg_lay.addLayout(save_row)
         outer.addWidget(cfg_card)
+
+        # Auto-save timer for delete-watch config
+        self._bl_save_timer = QTimer(self)
+        self._bl_save_timer.setSingleShot(True)
+        self._bl_save_timer.setInterval(700)
+        self._bl_save_timer.timeout.connect(self._do_save)
 
     def _on_dw_changed(self, val: int):
         if self._cfg_ref:
             self._cfg_ref.delete_watch_seconds = val
+            self._bl_save_lbl.setText("● Saving…")
+            self._bl_save_lbl.setStyleSheet(f"color: {C['yellow']}; font-size: 10px;")
+            self._bl_save_timer.start()
+
+    def _do_save(self):
+        if self._cfg_ref:
             self._cfg_ref.save()
             self.config_changed.emit()
+        self._bl_save_lbl.setText("Saved.")
+        self._bl_save_lbl.setStyleSheet(f"color: {C['green2']}; font-size: 10px;")
 
     def add_auto_entry(self, uid: str, username: str):
         """Called from MainWindow when engine fires on_delete_blacklist."""
