@@ -3173,7 +3173,7 @@ class SettingsPage(QWidget):
             "messages but does not change the displayed connection status.",
             "FieldHint"))
         lay.addWidget(lbl(
-            "⚠  Using self-bot tokens may violate Discord ToS. Use at your own risk.",
+            "",
             "FieldHint"))
 
         input_row = QHBoxLayout(); input_row.setSpacing(8)
