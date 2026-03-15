@@ -1038,29 +1038,30 @@ class Edge:
 # MICRO HELPERS
 
 def create_taskbar_icon() -> QIcon:
-    # Prefer the proper .ico file (has multiple resolutions built-in)
-    if ICO_PATH.exists():
-        return QIcon(str(ICO_PATH))
-    sz = 80
+    sz = 256
     if LOGO_PATH.exists():
         logo_pix = QPixmap(str(LOGO_PATH))
     else:
         logo_pix = QPixmap(sz, sz)
         logo_pix.fill(Qt.GlobalColor.transparent)
         p = QPainter(logo_pix)
-        p.setPen(QPen(QColor(C["white"]), 2))
-        p.drawEllipse(10, 10, sz - 20, sz - 20)
+        p.setPen(QPen(QColor(C["white"]), 4))
+        p.drawEllipse(20, 20, sz - 40, sz - 40)
         p.end()
 
-    logo_s = logo_pix.scaled(sz - 12, sz - 12, Qt.AspectRatioMode.KeepAspectRatio,
-                              Qt.TransformationMode.SmoothTransformation)
+    pad      = int(sz * 0.13)
+    logo_s   = logo_pix.scaled(
+        sz - pad * 2, sz - pad * 2,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation)
     bg = QPixmap(sz, sz)
     bg.fill(Qt.GlobalColor.transparent)
     pt = QPainter(bg)
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+    radius = sz * 0.22
     pt.setBrush(QColor("#000000"))
-    pt.setPen(QPen(QColor("#333333"), 1))
-    pt.drawRoundedRect(QRect(0, 0, sz, sz), 8, 8)
+    pt.setPen(Qt.PenStyle.NoPen)
+    pt.drawRoundedRect(QRect(0, 0, sz, sz), radius, radius)
     ox = (sz - logo_s.width())  // 2
     oy = (sz - logo_s.height()) // 2
     pt.drawPixmap(ox, oy, logo_s)
@@ -1474,20 +1475,21 @@ class _SplashBarWidget(QWidget):
 
 
 class SplashScreen(QWidget):
-    finished = Signal()
+    finished       = Signal()
+    _update_result = Signal(bool, str)
 
     _TASKS = [
-        "Inicializando o ambiente de execução…",
-        "Verificando atualizações disponíveis…",
-        "Carregando perfis e configurações…",
-        "Preparando o motor de snipe…",
-        "Pronto.",
+        "Initializing runtime environment…",
+        "Checking for updates…",
+        "Loading profiles and configuration…",
+        "Preparing snipe engine…",
+        "Ready.",
     ]
 
-    _HERO_H       = 118
-    _HERO_Y       = 68
-    _SLIDE_DIST   = 28
-    _BOTTOM_Y_OFF = 28
+    _HERO_H     = 118
+    _HERO_Y     = 68
+    _SLIDE_DIST = 28
+    _BOTTOM_Y   = 232
 
     def __init__(self):
         super().__init__()
@@ -1499,15 +1501,15 @@ class SplashScreen(QWidget):
         screen = QApplication.primaryScreen().geometry()
         self.move(screen.center().x() - 210, screen.center().y() - 140)
 
-        self._opacity        = 0.0
-        self._hero_t         = 0.0
-        self._bottom_alpha   = 0.0
-        self._bar_value      = 0.0
-        self._bar_target     = 0.0
-        self._task_idx       = 0
-        self._update_checked = False
-        self._update_found   = False
-        self._hero_done      = False
+        self._opacity      = 0.0
+        self._hero_t       = 0.0
+        self._bottom_alpha = 0.0
+        self._bar_value    = 0.0
+        self._bar_target   = 0.0
+        self._task_idx     = 0
+        self._hero_done    = False
+
+        self._update_result.connect(self._on_check_done)
         self._build()
 
     def _build(self):
@@ -1520,7 +1522,7 @@ class SplashScreen(QWidget):
             "border:1px solid #1c1c1c;"
             "border-radius:16px;}")
 
-        pad  = 40
+        pad     = 40
         inner_w = 420 - pad * 2
 
         self._hero_w = QWidget(self._root)
@@ -1556,9 +1558,8 @@ class SplashScreen(QWidget):
             "color:#555555;font-size:10px;letter-spacing:1px;background:transparent;")
         hl.addWidget(self._ver_lbl)
 
-        bottom_y = 280 - self._BOTTOM_Y_OFF - 32
         self._bottom_w = QWidget(self._root)
-        self._bottom_w.setGeometry(pad, bottom_y, inner_w, 32)
+        self._bottom_w.setGeometry(pad, self._BOTTOM_Y, inner_w, 32)
         self._bottom_w.setStyleSheet("background:transparent;")
         bl = QVBoxLayout(self._bottom_w)
         bl.setContentsMargins(0, 0, 0, 0)
@@ -1581,7 +1582,7 @@ class SplashScreen(QWidget):
         self._master_timer.timeout.connect(self._tick)
 
         self._step_timer = QTimer(self)
-        self._step_timer.setInterval(550)
+        self._step_timer.setInterval(560)
         self._step_timer.timeout.connect(self._step)
 
     def start(self):
@@ -1590,64 +1591,58 @@ class SplashScreen(QWidget):
         self._master_timer.start()
 
     def _tick(self):
-        changed = False
-
         if self._opacity < 1.0:
             self._opacity = min(1.0, self._opacity + 0.065)
             self.setWindowOpacity(self._opacity)
-            changed = True
 
         if self._hero_t < 1.0:
             self._hero_t = min(1.0, self._hero_t + 0.055)
             ease   = 1.0 - self._hero_t
             offset = int(self._SLIDE_DIST * (ease ** 2))
-            pad    = 40
-            self._hero_w.move(pad, self._HERO_Y + offset)
-            changed = True
+            self._hero_w.move(40, self._HERO_Y + offset)
             if self._hero_t >= 1.0:
-                self._hero_w.move(pad, self._HERO_Y)
+                self._hero_w.move(40, self._HERO_Y)
                 self._hero_done = True
                 self._step_timer.start()
 
         if self._hero_done and self._bottom_alpha < 1.0:
-            self._bottom_alpha = min(1.0, self._bottom_alpha + 0.06)
+            self._bottom_alpha = min(1.0, self._bottom_alpha + 0.055)
             self._bottom_eff.setOpacity(self._bottom_alpha)
-            changed = True
 
         if self._hero_done:
             diff = self._bar_target - self._bar_value
-            if abs(diff) > 0.004:
-                self._bar_value += diff * 0.11
+            if abs(diff) > 0.003:
+                self._bar_value += diff * 0.10
                 self._bar_w.set_progress(self._bar_value, len(self._TASKS))
-                changed = True
 
     def _step(self):
         self._task_idx += 1
         self._bar_target = float(self._task_idx)
 
-        if self._task_idx == 1:
+        if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
+
+        if self._task_idx == 1:
             self._step_timer.stop()
             self._launch_update_check()
             return
-
-        if self._task_idx < len(self._TASKS):
-            self._task_lbl.setText(self._TASKS[self._task_idx])
 
         if self._task_idx >= len(self._TASKS):
             self._step_timer.stop()
             QTimer.singleShot(600, self._begin_fade_out)
 
     def _launch_update_check(self):
+        sig = self._update_result
+
         def _worker():
-            found    = False
-            new_sha  = ""
+            found   = False
+            new_sha = ""
             if GITHUB_REPO:
                 try:
                     url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
                     req = urllib.request.Request(
                         url, headers={"User-Agent": "SniperApp/SplashCheck"})
-                    with urllib.request.urlopen(req, timeout=8) as resp:
+                    with urllib.request.urlopen(req, timeout=7) as resp:
                         data = json.loads(resp.read())
                     new_sha   = data.get("sha", "")[:7]
                     built_sha = getattr(AutoUpdater, "_BUILT_SHA", "")
@@ -1656,28 +1651,43 @@ class SplashScreen(QWidget):
                         found = True
                 except Exception:
                     pass
-            self._update_checked = True
-            self._update_found   = found
-            self._pending_sha    = new_sha
-            QTimer.singleShot(0, self._on_check_done)
+            sig.emit(found, new_sha)
 
         threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
 
-    def _on_check_done(self):
-        if self._update_found:
-            self._task_lbl.setText("Nova versão encontrada — atualizando automaticamente…")
+    def _on_check_done(self, found: bool, sha: str):
+        if found:
+            self._task_lbl.setText(f"Update available (commit {sha}) — install now?")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1400, self._do_silent_update)
+            self._show_update_prompt(sha)
         else:
             self._step_timer.start()
             self._step()
 
-    def _do_silent_update(self):
-        self._task_lbl.setText("Reconstruindo o executável — aguarde…")
-        updater = AutoUpdater()
-        threading.Thread(
-            target=updater.rebuild_and_restart, daemon=True, name="SilentRebuild").start()
-        QTimer.singleShot(2500, self._begin_fade_out)
+    def _show_update_prompt(self, sha: str):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Update Available")
+        msg.setText(
+            f"A new version is available (commit {sha}).\n\n"
+            "The app will rebuild from source and restart automatically.\n\n"
+            "Update now?")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            self._task_lbl.setText("Rebuilding executable — please wait…")
+            updater = AutoUpdater()
+            threading.Thread(
+                target=updater.rebuild_and_restart,
+                daemon=True, name="SplashRebuild").start()
+            QTimer.singleShot(2500, self._begin_fade_out)
+        else:
+            self._task_lbl.setText("Update skipped — continuing…")
+            self._bar_target = 0.0
+            self._bar_value  = 0.0
+            self._task_idx   = 1
+            self._step_timer.start()
+            self._step()
 
     def _begin_fade_out(self):
         self._step_timer.stop()
@@ -3750,15 +3760,15 @@ class MainWindow(QMainWindow):
         if paused:
             self._tb.badge.set_state("idle")
             self._pd.badge.set_state("idle")
-            self._pd.c_status.set_value("AUTO-PAUSADO")
-            e = LogEntry(LogLevel.WARN, "[ENGINE] Auto-pausado após snipe.")
+            self._pd.c_status.set_value("AUTO-PAUSED")
+            e = LogEntry(LogLevel.WARN, "[ENGINE] Auto-paused after snipe.")
             self._pl.append(e); self._pd.append(e, self._dev)
         else:
             if not self._is_paused:
                 self._tb.badge.set_state("on")
                 self._pd.badge.set_state("on")
                 self._pd.c_status.set_value("ON")
-            e = LogEntry(LogLevel.INFO, "[ENGINE] Auto-pausa encerrada — escaneando.")
+            e = LogEntry(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
             self._pl.append(e); self._pd.append(e, self._dev)
 
     def _on_st(self, s: EngineStatus):
@@ -3795,14 +3805,24 @@ class MainWindow(QMainWindow):
         if self._br: self._br.reload(cfg)
 
     def _on_update_available(self, sha: str):
-        self._pd.show_notification(
-            f"Nova versão detectada ({sha}) — reconstruindo automaticamente…", "warning")
-        e = LogEntry(LogLevel.WARN, f"[UPDATE] Novo commit detectado ({sha}), reconstruindo…")
-        self._pl.append(e); self._pd.append(e, self._dev)
-        self._stop()
-        threading.Thread(
-            target=self._updater.rebuild_and_restart,
-            daemon=True, name="AutoRebuild").start()
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Update Available")
+        msg.setText(
+            f"A new version is available (commit {sha}).\n\n"
+            "The app will rebuild from source and restart automatically.\n\n"
+            "Update now?")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            self._pd.show_notification(
+                f"Rebuilding from source (commit {sha})…", "warning")
+            self._stop()
+            threading.Thread(
+                target=self._updater.rebuild_and_restart,
+                daemon=True, name="AutoRebuild").start()
+        else:
+            self._pd.show_notification(f"Update {sha} skipped.", "warning")
 
     def _is_snipe_log(self, e: LogEntry) -> bool:
         if e.level in (LogLevel.SNIPE, LogLevel.SUCCESS, LogLevel.ERROR, LogLevel.WARN):
@@ -3874,16 +3894,16 @@ class MainWindow(QMainWindow):
         if self._is_paused:
             if self._br:
                 self._br.pause()
-            e = LogEntry(LogLevel.WARN, "[ENGINE] Sniper manualmente pausado.")
+            e = LogEntry(LogLevel.WARN, "[ENGINE] Sniper manually paused.")
             self._pl.append(e); self._pd.append(e, self._dev)
             self._tb.badge.set_state("idle")
             self._pd.badge.set_state("idle")
-            self._pd.c_status.set_value("PAUSADO")
+            self._pd.c_status.set_value("PAUSED")
             self._pd.on_pause()
         else:
             if self._br:
                 self._br.resume()
-            e = LogEntry(LogLevel.INFO, "[ENGINE] Sniper retomado — escaneando.")
+            e = LogEntry(LogLevel.INFO, "[ENGINE] Sniper resumed — scanning.")
             self._pl.append(e); self._pd.append(e, self._dev)
             self._tb.badge.set_state("on")
             self._pd.badge.set_state("on")
