@@ -1658,38 +1658,41 @@ class SplashScreen(QWidget):
         sig = self._update_result
 
         def _worker():
-            if not GITHUB_REPO or not getattr(sys, "frozen", False):
-                sig.emit(False, "")
-                return
-            built_sha  = _get_built_sha()
-            remote_sha = _fetch_remote_sha()
-            if remote_sha and built_sha and remote_sha != built_sha:
-                sig.emit(True, remote_sha)
-            else:
-                sig.emit(False, "")
+            found, sha = _needs_update()
+            sig.emit(found, sha)
 
         threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
 
     def _on_check_done(self, found: bool, sha: str):
         if found:
-            self._pending_sha = sha
-            self._task_lbl.setText(f"Update found ({sha}) — building new version…")
+            self._task_lbl.setText(f"Update found ({sha}) — launching build…")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1200, self._do_update)
+            QTimer.singleShot(1000, lambda: self._do_update(sha))
         else:
             self._step_timer.start()
             self._step()
 
-    def _do_update(self):
-        self._task_lbl.setText("Launching build pipeline — app will close…")
+    def _do_update(self, sha: str):
+        self._task_lbl.setText("Build pipeline starting — closing app…")
+        ok = _launch_bat_update()
+        if ok:
+            QTimer.singleShot(1200, self._quit_for_update)
+        else:
+            self._task_lbl.setText("build.bat not found — skipping update…")
+            self._bar_target = 0.0
+            self._bar_value  = 0.0
+            self._task_idx   = 1
+            QTimer.singleShot(600, lambda: (self._step_timer.start(), self._step()))
 
-        def _worker():
-            ok = _launch_bat_update()
-            if not ok:
-                self._update_result.emit(False, "")
-
-        threading.Thread(target=_worker, daemon=False, name="SplashRebuild").start()
-        QTimer.singleShot(2000, self._begin_fade_out)
+    def _quit_for_update(self):
+        self._step_timer.stop()
+        self._master_timer.stop()
+        self.close()
+        try:
+            QApplication.instance().quit()
+        except Exception:
+            pass
+        sys.exit(0)
 
     def _begin_fade_out(self):
         self._step_timer.stop()
@@ -1716,7 +1719,13 @@ def _get_exe_dir() -> Path:
     return Path(os.path.dirname(os.path.abspath(__file__)))
 
 def _get_built_sha() -> str:
-    return getattr(AutoUpdater, "_BUILT_SHA", "")
+    sha = getattr(AutoUpdater, "_BUILT_SHA", "")
+    if sha:
+        return sha
+    try:
+        return (_get_exe_dir() / "version.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
 
 def _fetch_remote_sha() -> str:
     try:
@@ -1727,12 +1736,16 @@ def _fetch_remote_sha() -> str:
     except Exception:
         return ""
 
-def _read_version_txt() -> str:
-    try:
-        p = _get_exe_dir() / "version.txt"
-        return p.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
+def _needs_update() -> tuple:
+    if not GITHUB_REPO or not getattr(sys, "frozen", False):
+        return False, ""
+    remote_sha = _fetch_remote_sha()
+    if not remote_sha:
+        return False, ""
+    built_sha = _get_built_sha()
+    if built_sha and remote_sha == built_sha:
+        return False, ""
+    return True, remote_sha
 
 def _ensure_bat() -> Optional[Path]:
     exe_dir = _get_exe_dir()
@@ -1781,17 +1794,14 @@ class AutoUpdater(QObject):
         super().__init__(parent)
 
     def check_async(self):
-        if not GITHUB_REPO:
-            return
-        if not getattr(sys, "frozen", False):
+        if not GITHUB_REPO or not getattr(sys, "frozen", False):
             return
         threading.Thread(target=self._check, daemon=True, name="AutoUpdate").start()
 
     def _check(self):
-        built_sha  = _get_built_sha()
-        remote_sha = _fetch_remote_sha()
-        if remote_sha and built_sha and remote_sha != built_sha:
-            self.update_available.emit(remote_sha)
+        found, sha = _needs_update()
+        if found:
+            self.update_available.emit(sha)
 
     def rebuild_and_restart(self):
         if _launch_bat_update():
