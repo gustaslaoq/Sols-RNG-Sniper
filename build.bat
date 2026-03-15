@@ -103,7 +103,7 @@ if "%UPDATE_MODE%"=="0" (
 )
 
 echo  Waiting for old process to fully exit...
-timeout /t 6 /nobreak >nul
+timeout /t 10 /nobreak >nul
 set RETRY=0
 
 :copy_retry
