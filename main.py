@@ -1482,7 +1482,7 @@ class SmoothScrollArea(QScrollArea):
     This means: scrolling fast through the page always works. Only when you
     deliberately rest the mouse over a list/text area does that widget take over.
     """
-    HOVER_MS   = 180    # ms the mouse must dwell over a child before it "owns" scroll
+    HOVER_MS   = 500    # ms the mouse must dwell over a child before it "owns" scroll
     STEP_PX    = 80     # pixels per scroll notch
     EASE       = 0.20   # easing factor per frame (higher = snappier)
 
