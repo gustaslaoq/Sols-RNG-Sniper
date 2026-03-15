@@ -484,7 +484,7 @@ class PluginLoader:
 # ── Asset Manager ─────────────────────────────────────────────────────────────
 
 ASSETS: dict[str, str] = {
-    "logo.png": "https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png",
+    "logo.png": "https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png",
     "app.ico":  "",   # leave empty to skip
 }
 
@@ -1560,17 +1560,31 @@ class SplashScreen(QWidget):
 class AutoUpdater(QObject):
     """
     Checks GitHub for new commits on the main branch.
-    When an update is found, downloads build.bat from the repo and runs it.
-    build.bat clones fresh source, rebuilds the .exe and replaces the running one.
-    No pre-built .exe releases needed — always built from source.
+    When an update is found:
+      1. Downloads the latest build.bat from the repo
+      2. Replaces the local build.bat (if one exists next to the .exe)
+      3. Runs build.bat --update <exe_path> which rebuilds and restarts the app
+
+    Works from both frozen .exe (has _BUILT_SHA) and dev source (always checks).
     """
-    update_available = Signal(str)   # emits the new commit SHA
+    update_available = Signal(str)   # emits latest commit SHA
+
+    _RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # SHA of the commit this .exe was built from — embedded at build time.
-        # build.bat writes BUILT_COMMIT = "abc123..." into the source before compiling.
-        self._built_sha = getattr(self, "_BUILT_SHA", "")
+        # Embedded at build time by build.bat stamping step
+        self._built_sha: str = getattr(self, "_BUILT_SHA", "")
+
+    @property
+    def _is_frozen(self) -> bool:
+        return getattr(sys, "frozen", False)
+
+    @property
+    def _exe_dir(self) -> Path:
+        if self._is_frozen:
+            return Path(os.path.dirname(sys.executable))
+        return Path(os.path.dirname(os.path.abspath(__file__)))
 
     def check_async(self):
         if not GITHUB_REPO:
@@ -1580,42 +1594,55 @@ class AutoUpdater(QObject):
     def _check(self):
         try:
             url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "SniperApp/AutoUpdater"})
+            req = urllib.request.Request(url, headers={"User-Agent": "SniperApp/AutoUpdater"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
             latest_sha = data.get("sha", "")[:7]
-            if latest_sha and latest_sha != self._built_sha and self._built_sha:
-                self.update_available.emit(latest_sha)
+            if not latest_sha:
+                return
+            # If frozen: only update when SHA changed
+            # If running from source: always notify (dev mode convenience)
+            if self._is_frozen and latest_sha == self._built_sha:
+                return
+            self.update_available.emit(latest_sha)
         except Exception:
             pass
 
     def rebuild_and_restart(self):
         """
-        Download build.bat from the repo and run it with the --update flag.
-        build.bat will clone, build a new .exe, replace the running one, then restart.
+        1. Download latest build.bat from GitHub
+        2. Update local build.bat next to the exe
+        3. Run it with --update flag to rebuild and restart
         """
         if not GITHUB_REPO:
             return
         try:
-            bat_url = (f"https://raw.githubusercontent.com/{GITHUB_REPO}"
-                       f"/main/build.bat")
-            req = urllib.request.Request(
-                bat_url, headers={"User-Agent": "SniperApp/AutoUpdater"})
+            # Download latest build.bat
+            bat_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
+            req = urllib.request.Request(bat_url, headers={"User-Agent": "SniperApp/AutoUpdater"})
             with urllib.request.urlopen(req, timeout=15) as resp:
-                bat_content = resp.read().decode("utf-8", errors="ignore")
+                bat_bytes = resp.read()
 
-            temp_dir = Path(os.getenv("TEMP", os.getcwd())) / "SniperUpdate"
+            # Always write CRLF (Windows requirement)
+            bat_text = bat_bytes.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+            bat_crlf = bat_text.replace("\n", "\r\n").encode("utf-8")
+
+            # 1. Update the local build.bat next to the exe (so future manual runs are fresh)
+            local_bat = self._exe_dir / "build.bat"
+            try:
+                local_bat.write_bytes(bat_crlf)
+            except Exception:
+                pass  # Not critical if we can't update it
+
+            # 2. Write to temp for execution
+            temp_dir = Path(os.getenv("TEMP", str(self._exe_dir))) / "SniperUpdate"
             temp_dir.mkdir(parents=True, exist_ok=True)
-            bat_path = temp_dir / "update.bat"
-            bat_path.write_text(bat_content, encoding="utf-8")
+            run_bat = temp_dir / "update.bat"
+            run_bat.write_bytes(bat_crlf)
 
-            # Pass current exe path and --update flag so build.bat knows to
-            # replace the running .exe and relaunch it after building
-            current_exe = sys.executable
+            current_exe = str(sys.executable)
             subprocess.Popen(
-                ["cmd.exe", "/c", str(bat_path),
-                 "--update", f'"{current_exe}"'],
+                ["cmd.exe", "/c", str(run_bat), "--update", current_exe],
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
             QApplication.instance().quit()
@@ -2110,153 +2137,6 @@ class DashboardPage(QWidget):
     def update_roblox_status(self, running: bool):
         """Update the Roblox card — called from the tick timer."""
         self.c_roblox.set_value("RUNNING" if running else "CLOSED")
-
-    def show_notification(self, text: str, level: str = "error"):
-        self._notif_lbl.setText(text)
-        if level == "error":
-            color  = "#ff8a80"
-            bg     = C["notif_red_bg"]
-            border = C["notif_red_border"]
-        else:
-            color  = "#ffd480"
-            bg     = C["notif_yellow_bg"]
-            border = C["notif_yellow_border"]
-        self._notif_lbl.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
-        self._notif_frame.setStyleSheet(
-            f"#NotifFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 8px; }}")
-        self._notif_frame.setVisible(True)
-        self._notif_timer.start()
-
-    def _emit_config(self):
-        self.hotkey_config_changed.emit({
-            "toggle_key": self._tg_key.text(),
-            "toggle_en":  self._tg_chk.isChecked(),
-            "pause_key":  self._ps_key.text(),
-            "pause_en":   self._ps_chk.isChecked(),
-            "pause_dur":  self._ps_dur.value(),
-        })
-
-    def on_start(self): self._s.setEnabled(False); self._e.setEnabled(True)
-    def on_stop(self):  self._s.setEnabled(True);  self._e.setEnabled(False)
-
-    def append(self, e: LogEntry, dev: bool = False):
-        if e.dev_only and not dev:
-            return
-        clr = {
-            LogLevel.SUCCESS: C["green2"], LogLevel.ERROR:  C["red2"],
-            LogLevel.WARN:    C["yellow"], LogLevel.DEBUG:  C["purple"],
-            LogLevel.SNIPE:   C["orange"],
-        }.get(e.level, C["green"])
-        html = (f'<span style="color:{C["dim"]}">[{e.ts}]</span> '
-                f'<span style="color:{clr}">{e.message}</span>')
-        self.mini.append(html)
-        doc = self.mini.document()
-        if doc.blockCount() > 2000:
-            cursor = self.mini.textCursor()
-            cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.movePosition(cursor.MoveOperation.Down,
-                                cursor.MoveMode.KeepAnchor, doc.blockCount() - 2000)
-            cursor.removeSelectedText()
-        b = self.mini.verticalScrollBar(); b.setValue(b.maximum())
-
-    def set_hotkey_state(self, cfg: dict):
-        for w in (self._tg_key, self._tg_chk, self._ps_key, self._ps_chk, self._ps_dur):
-            w.blockSignals(True)
-        self._tg_key.setText(cfg.get("toggle_key", ""))
-        self._tg_chk.setChecked(cfg.get("toggle_en", True))
-        self._ps_key.setText(cfg.get("pause_key",   ""))
-        self._ps_chk.setChecked(cfg.get("pause_en",  True))
-        self._ps_dur.setValue(cfg.get("pause_dur",  60))
-        for w in (self._tg_key, self._tg_chk, self._ps_key, self._ps_chk, self._ps_dur):
-            w.blockSignals(False)
-
-        # Control buttons
-        br = QHBoxLayout(); br.setSpacing(10)
-        self._s = QPushButton("  Start Sniper")
-        self._s.setIcon(_svg_icon("play", "#000000", 16))
-        self._s.setObjectName("PrimaryBtn")
-        self._s.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._s.setFixedHeight(42); self._s.clicked.connect(self.start_requested.emit)
-
-        self._e = QPushButton("  Stop Sniper")
-        self._e.setIcon(_svg_icon("stop", C["red2"], 16))
-        self._e.setObjectName("DangerBtn")
-        self._e.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._e.setFixedHeight(42); self._e.setEnabled(False)
-        self._e.clicked.connect(self.stop_requested.emit)
-
-        br.addWidget(self._s); br.addWidget(self._e); br.addStretch()
-        lay.addLayout(br)
-
-        # Recent activity log
-        lay.addWidget(lbl("RECENT ACTIVITY", "SecTitle"))
-        self.mini = QTextEdit(); self.mini.setObjectName("LogConsole")
-        self.mini.setReadOnly(True)
-        self.mini.setPlaceholderText("Waiting for connection…")
-        lay.addWidget(self.mini, 1)
-
-        # Hotkey configuration card
-        hk_card = QFrame(); hk_card.setObjectName("SettCard")
-        hk_lay  = QVBoxLayout(hk_card); hk_lay.setContentsMargins(12, 12, 12, 12); hk_lay.setSpacing(8)
-
-        hk_hdr = QHBoxLayout()
-        hk_hdr.addWidget(lbl("HOTKEY CONFIGURATION", "GrpLabel"))
-        hk_hdr.addWidget(HelpIcon(
-            "Set keys to control the sniper globally.\n"
-            "Toggle: turn on/off.\nPause: temporary stop."))
-        hk_hdr.addStretch()
-        hk_lay.addLayout(hk_hdr)
-
-        tg_row = QHBoxLayout()
-        self._tg_key = KeySequenceEdit(); self._tg_key.setPlaceholderText("Toggle Key")
-        self._tg_key.setMaximumWidth(120)
-        self._tg_chk = QCheckBox(); self._tg_chk.setChecked(True)
-        tg_row.addWidget(lbl("Toggle Sniper:", "FieldLbl"))
-        tg_row.addWidget(self._tg_key); tg_row.addWidget(self._tg_chk); tg_row.addStretch()
-        hk_lay.addLayout(tg_row)
-
-        ps_row = QHBoxLayout()
-        self._ps_key = KeySequenceEdit(); self._ps_key.setPlaceholderText("Pause Key")
-        self._ps_key.setMaximumWidth(120)
-        self._ps_chk = QCheckBox(); self._ps_chk.setChecked(True)
-        self._ps_dur = QSpinBox(); self._ps_dur.setRange(1, 600)
-        self._ps_dur.setValue(60); self._ps_dur.setSuffix("s")
-        ps_row.addWidget(lbl("Pause Sniper:", "FieldLbl"))
-        ps_row.addWidget(self._ps_key); ps_row.addWidget(QLabel("For:"))
-        ps_row.addWidget(self._ps_dur); ps_row.addWidget(self._ps_chk); ps_row.addStretch()
-        hk_lay.addLayout(ps_row)
-        lay.addWidget(hk_card)
-
-        # In-app notification bar
-        self._notif_frame = QFrame(); self._notif_frame.setObjectName("NotifFrame")
-        self._notif_frame.setFixedHeight(40); self._notif_frame.setVisible(False)
-
-        self._notif_timer = QTimer(self)
-        self._notif_timer.setSingleShot(True); self._notif_timer.setInterval(4000)
-        self._notif_timer.timeout.connect(lambda: self._notif_frame.setVisible(False))
-
-        notif_lay = QHBoxLayout(self._notif_frame)
-        notif_lay.setContentsMargins(15, 0, 15, 0)
-        self._notif_lbl = lbl("")
-        self._notif_lbl.setWordWrap(True)
-        notif_lay.addWidget(self._notif_lbl); notif_lay.addStretch()
-
-        close_btn = QPushButton("×")
-        close_btn.setFixedSize(20, 20)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(lambda: self._notif_frame.setVisible(False))
-        close_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {C['muted']}; border: none; font-size: 16px; }}"
-            f"QPushButton:hover {{ color: {C['white']}; }}")
-        notif_lay.addWidget(close_btn)
-        lay.addWidget(self._notif_frame)
-
-        # Connect hotkey signals
-        self._tg_key.keySequenceChanged.connect(self._emit_config)
-        self._tg_chk.toggled.connect(self._emit_config)
-        self._ps_key.keySequenceChanged.connect(self._emit_config)
-        self._ps_chk.toggled.connect(self._emit_config)
-        self._ps_dur.valueChanged.connect(self._emit_config)
 
     def show_notification(self, text: str, level: str = "error"):
         self._notif_lbl.setText(text)
@@ -3490,6 +3370,20 @@ class MainWindow(QMainWindow):
         self._tray: Optional[QSystemTrayIcon] = None
         self._setup_tray()
 
+        # Pre-load plugins at startup so the Plugins tab works before engine starts
+        self._init_plugin_loader()
+
+    def _init_plugin_loader(self):
+        """Create the PluginLoader at startup so the Plugins page works immediately."""
+        if getattr(sys, "frozen", False):
+            _base = Path(os.path.dirname(sys.executable))
+        else:
+            _base = Path(os.path.dirname(os.path.abspath(__file__)))
+        pl = PluginLoader(_base / "plugins")
+        pl.discover()
+        self._startup_plugin_loader = pl
+        self._ppg.set_loader(pl)
+
     def _setup(self):
         self.setWindowTitle(APP_NAME)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -3643,7 +3537,9 @@ class MainWindow(QMainWindow):
         # Wire subsystem pages to the engine's injected managers
         engine = self._br.engine
         self._pbl.set_manager(engine.blacklist)
+        # Sync the plugins page to the engine's loader (may differ from startup loader)
         self._ppg.set_loader(engine._plugins)
+        self._startup_plugin_loader = engine._plugins
         # Give plugins access to the live UI
         if engine._plugins:
             engine._plugins.init_all(engine=engine, ui=self)
