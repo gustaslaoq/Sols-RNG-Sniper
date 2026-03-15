@@ -484,7 +484,7 @@ class PluginLoader:
 # ── Asset Manager ─────────────────────────────────────────────────────────────
 
 ASSETS: dict[str, str] = {
-    "logo.png": "https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png",
+    "logo.png": "https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png",
     "app.ico":  "",   # leave empty to skip
 }
 
