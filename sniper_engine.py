@@ -33,9 +33,7 @@ import psutil
 
 logger = logging.getLogger("sniper_engine")
 
-# ─────────────────────────────────────────────────────────────────────────────
 # ENUMS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class EngineStatus(Enum):
     IDLE       = "idle"
@@ -53,9 +51,7 @@ class LogLevel(Enum):
     DEBUG   = "DEBUG"
     SNIPE   = "SNIPE"
 
-# ─────────────────────────────────────────────────────────────────────────────
 # NETWORK / PATH CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
 
 DISCORD_GATEWAY_URL  = "wss://gateway.discord.gg/?v=10&encoding=json"
 DISCORD_API_BASE     = "https://discord.com/api/v10"
@@ -66,9 +62,7 @@ ROBLOX_LOG_PATH      = Path(os.getenv("LOCALAPPDATA", "")) / "Roblox" / "logs"
 LOG_TAIL_BYTES       = 131072  # 128 KB
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # PRE-COMPILED REGEX PATTERNS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class _Patterns:
     ROBLOX_PRIVATE = re.compile(
@@ -91,7 +85,6 @@ class _Patterns:
         r"https?://(?:rb\.gy|bit\.ly|tinyurl\.com|t\.co|discord\.gg|discord\.com/invite|isgd\.it|cutt\.ly)/[\w/-]+",
         re.IGNORECASE)
 
-    # Compiled once — ordered from most specific to fallback
     BIOME_PATTERNS = [
         re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
         re.compile(r'"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
@@ -116,9 +109,7 @@ class _Patterns:
 PATTERNS = _Patterns()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # DATA MODELS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_app_dir() -> Path:
     """Single canonical app directory — LOCALAPPDATA/SlaoqSniper on Windows."""
@@ -294,11 +285,11 @@ class SniperConfig:
     hotkey_pause_en:         bool          = False
     hotkey_pause_dur:        int           = 60
     webhook:                 WebhookConfig = field(default_factory=WebhookConfig)
-    # Cooldown config (optional — loaded from "cooldown" key in config.json)
+    # cooldown config (optional — loaded from "cooldown" key in config.json)
     cooldown_guild_ttl:      float         = 30.0
     cooldown_profile_ttl:    float         = 0.0
     cooldown_link_ttl:       float         = 10.0
-    # Internal — not serialised
+    # internal — not serialised
     config_path:             str           = field(default="", repr=False, compare=False)
 
     def __post_init__(self):
@@ -358,7 +349,7 @@ class SniperConfig:
             cfg.profiles            = profiles
             cfg.webhook             = WebhookConfig.from_dict(webhook_raw)
             cfg.config_path         = path
-            # Load cooldown TTLs (backwards-compatible: use defaults if key absent)
+            # load cooldown TTLs (backwards-compatible: use defaults if key absent)
             if cooldown_raw:
                 cfg.cooldown_guild_ttl   = cooldown_raw.get("guild_ttl",   30.0)
                 cfg.cooldown_profile_ttl = cooldown_raw.get("profile_ttl",  0.0)
@@ -371,9 +362,7 @@ class SniperConfig:
             return cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # LOG ENTRY
-# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class LogEntry:
@@ -383,9 +372,8 @@ class LogEntry:
     dev_only: bool = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # PROCESS MANAGER
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class ProcessManager:
     @staticmethod
@@ -449,10 +437,7 @@ class ProcessManager:
         except Exception as exc:
             logger.error("Failed to restart Roblox: %s", exc)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # ROBLOX LOG READER  (session-aware biome detection)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class RobloxLogReader:
     """
@@ -467,7 +452,6 @@ class RobloxLogReader:
         self.tail_bytes       = tail_bytes
         self._launch_time:    float         = 0.0
         self._session_log:    Optional[Path] = None
-        # ── incremental reading state ─────────────────────────────────────────
         # Maps log path → last byte offset successfully read
         self._seek_pos:       dict[Path, int] = {}
         # Accumulates partial text between reads so biome patterns aren't split
@@ -489,7 +473,6 @@ class RobloxLogReader:
         self._seek_pos.clear()
         self._read_buf.clear()
 
-    # ── private helpers ───────────────────────────────────────────────────────
 
     def _find_session_log(self) -> Optional[Path]:
         if not ROBLOX_LOG_PATH.exists():
@@ -526,7 +509,6 @@ class RobloxLogReader:
         last_pos = self._seek_pos.get(path, max(0, size - self.tail_bytes))
 
         if last_pos >= size:
-            # File hasn't grown; use accumulated buffer if any
             text = self._read_buf.get(path, "")
         else:
             try:
@@ -561,7 +543,7 @@ class RobloxLogReader:
 
         return None
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # public API
 
     def get_current_biome(self) -> Optional[str]:
         if self._launch_time == 0:
@@ -609,16 +591,13 @@ class RobloxLogReader:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # LINK RESOLVER
-# ─────────────────────────────────────────────────────────────────────────────
 
 class LinkResolver:
     _CACHE_MAX = 512   # LRU cache — 512 resolved URLs
 
     def __init__(self, session: aiohttp.ClientSession):
         self._session = session
-        # OrderedDict used as LRU: oldest entry at front
         self._cache: "OrderedDict[str, str]" = OrderedDict()
 
     def _cache_set(self, key: str, value: str):
@@ -680,10 +659,7 @@ class LinkResolver:
 
         return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # PROFILE FILTER
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ProfileFilter:
     def __init__(self, config: SniperConfig):
@@ -715,13 +691,7 @@ class ProfileFilter:
         for p in self._cfg.profiles:
             p.compile()
 
-
-# (WebhookSender lives in main.py — engine fires callbacks instead)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # DISCORD GATEWAY CLIENT
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DiscordGateway:
     def __init__(self, token: str, on_message: Callable, on_log: Callable,
@@ -901,10 +871,7 @@ class DiscordGateway:
         if self._session and not self._session.closed:
             await self._session.close()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # SNIPER ENGINE  —  orchestrates all subsystems
-# ─────────────────────────────────────────────────────────────────────────────
 
 class SniperEngine:
 
@@ -936,7 +903,7 @@ class SniperEngine:
         self._log_reader  = RobloxLogReader(config.log_tail_bytes)
         self._snipe_count = 0
 
-        # ── metrics ───────────────────────────────────────────────────────
+        # ─ metrics
         self.metrics: dict = {
             "messages_scanned":  0,
             "links_detected":    0,
@@ -944,18 +911,18 @@ class SniperEngine:
             "webhooks_sent":     0,
         }
 
-        # ── message ID dedup buffer ───────────────────────────────────────
+        # ─ message ID dedup buffer
         self._seen_msg_ids: deque = deque(maxlen=self._MSG_DEDUP_SIZE)
 
-        # ── server-URI dedup  {uri: expiry_monotonic} ─────────────────────
+        # ─ server-URI dedup  {uri: expiry_monotonic}
         self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
 
-        # ── injected subsystems ───────────────────────────────────────────
+        # ─ injected subsystems 
         self.blacklist = blacklist   # Optional BlacklistManager
         self.cooldown  = cooldown    # Optional CooldownManager
         self._plugins  = plugins     # Optional PluginLoader
 
-        # ── file logger ───────────────────────────────────────────────────
+        # ─ file logger 
         self._file_logger: Optional[logging.Logger] = None
         if config.log_to_file:
             self._setup_file_logger()
@@ -968,7 +935,7 @@ class SniperEngine:
         self.on_ping_update:  Callable = lambda p: None
         self.on_paused:       Callable = lambda v: None
 
-    # ── properties ────────────────────────────────────────────────────────────
+    # ─ properties
 
     @property
     def snipe_count(self) -> int:
@@ -1028,7 +995,7 @@ class SniperEngine:
             for k in expired:
                 del d[k]
 
-    # ── lifecycle ─────────────────────────────────────────────────────────────
+    # ─ lifecycle
 
     async def start(self):
         if self._running:
@@ -1116,7 +1083,7 @@ class SniperEngine:
             cd.link_ttl    = getattr(config, "cooldown_link_ttl",    10.0)
             self.cooldown.update_config(cd)
 
-    # ── background tasks ──────────────────────────────────────────────────────
+    # ─ background tasks
 
     async def _run_gateway(self):
         if not self.config.token:
@@ -1160,7 +1127,7 @@ class SniperEngine:
             if biome:
                 self._log(LogLevel.DEBUG, f"[BIOME] Current biome: {biome}", dev_only=True)
 
-    # ── message handler ───────────────────────────────────────────────────────
+    # ─ message handler
 
     async def _on_discord_message(self, guild_id: str, channel_id: str,
                                   msg_id: str, content: str, author: str, full: str):
@@ -1169,9 +1136,6 @@ class SniperEngine:
             return
 
         self.metrics["messages_scanned"] += 1
-
-        # ── 1. Message ID deduplication ───────────────────────────────────────
-        # Guards against gateway reconnect replaying the same message
         if msg_id and msg_id in self._seen_msg_ids:
             self._log(LogLevel.DEBUG,
                 f"[DEDUP] Duplicate message ID {msg_id} skipped", dev_only=True)
@@ -1179,7 +1143,6 @@ class SniperEngine:
         if msg_id:
             self._seen_msg_ids.append(msg_id)
 
-        # ── 2. Blacklist check ────────────────────────────────────────────────
         # Extract author_id from full message if available; fall back to author name
         author_id = ""  # populated by DiscordGateway when we pass it through
         if self.blacklist and author_id and self.blacklist.is_blacklisted(author_id):
@@ -1189,14 +1152,12 @@ class SniperEngine:
                 f"{entry.reason if entry else '?'})", dev_only=True)
             return
 
-        # ── 3. Profile filter ─────────────────────────────────────────────────
         profile = self._filter.evaluate(full) if self._filter else None
         if profile is None:
             self._log(LogLevel.DEBUG,
                 f"[FILTER] No profile matched message from {author}", dev_only=True)
             return
 
-        # ── 4. Link extraction ────────────────────────────────────────────────
         link = self._resolver.extract_roblox_link(full)
         if not link:
             self._log(LogLevel.DEBUG,
@@ -1208,7 +1169,6 @@ class SniperEngine:
 
         place_id, code, uri = link
 
-        # ── 5. Server URI dedup — ignore same URI within TTL ─────────────────
         now = time.monotonic()
         if uri in self._recent_servers and now < self._recent_servers[uri]:
             self._log(LogLevel.DEBUG,
@@ -1216,7 +1176,6 @@ class SniperEngine:
             return
         self._recent_servers[uri] = now + self._SERVER_DEDUP_TTL
 
-        # ── 6. Cooldown check ─────────────────────────────────────────────────
         if self.cooldown:
             blocked, reason = self.cooldown.check(
                 guild_id, profile.name, uri,
@@ -1235,12 +1194,10 @@ class SniperEngine:
         self._log(LogLevel.SNIPE,
             f"[SNIPER] Profile '{profile.name}' — {author}: {content[:80]}")
 
-        # ── 7. Build jump-to-message URL (populated in webhook payload) ───────
         jump_url = ""
         if guild_id and channel_id and msg_id:
             jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{msg_id}"
 
-        # ── 8. Optional auto-join — execute first for minimum latency ─────────
         if self.config.auto_join_enabled:
             if self.config.auto_join_delay_ms:
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
@@ -1252,7 +1209,6 @@ class SniperEngine:
             if profile.verify_biome_name and self.config.anti_bait_enabled:
                 asyncio.create_task(self._verify_biome(profile, uri))
 
-        # ── 9. Build snipe data dict ──────────────────────────────────────────
         snipe_data = {
             "place_id":    place_id,
             "code":        code,
@@ -1264,17 +1220,14 @@ class SniperEngine:
             "jump_url":    jump_url,
         }
 
-        # ── 10. Fire on_snipe callback ────────────────────────────────────────
         try:
             self.on_snipe(snipe_data)
         except Exception:
             pass
 
-        # ── 11. Broadcast to plugins ──────────────────────────────────────────
         if self._plugins:
             self._plugins.broadcast("on_snipe", snipe_data)
 
-        # ── 12. Pause-after-snipe ─────────────────────────────────────────────
         pause_s = self.config.pause_after_snipe_s
         if pause_s > 0:
             self._paused = True
@@ -1284,13 +1237,16 @@ class SniperEngine:
                 pass
             self._log(LogLevel.INFO,
                 f"[ENGINE] Auto-paused for {pause_s}s after snipe…")
-            await asyncio.sleep(pause_s)
-            self._paused = False
             try:
-                self.on_paused(False)
-            except Exception:
-                pass
-            self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
+                await asyncio.sleep(pause_s)
+            finally:
+                self._paused = False
+            if self._running:
+                try:
+                    self.on_paused(False)
+                except Exception:
+                    pass
+                self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         """Wait for Roblox to load and verify the active biome against the profile."""
