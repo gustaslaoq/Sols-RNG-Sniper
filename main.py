@@ -205,6 +205,11 @@ LOGO_PATH = Path(resource_path("logo.png"))
 ICO_PATH  = Path(resource_path("app.ico"))
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# INLINE MODULES  (blacklist · cooldown · plugin_loader · assets)
+# Previously separate files — merged here so the project is 2-file only.
+# ═════════════════════════════════════════════════════════════════════════════
+
 # ── Blacklist ─────────────────────────────────────────────────────────────────
 
 REASON_DELETED_LINK = "message_deleted"
@@ -1652,37 +1657,22 @@ class SplashScreen(QWidget):
 
     def _on_check_done(self, found: bool, sha: str):
         if found:
-            self._task_lbl.setText(f"Update available (commit {sha}) — install now?")
+            self._pending_sha = sha
+            self._task_lbl.setText(f"Update found ({sha}) — rebuilding from source…")
             self._bar_target = float(len(self._TASKS))
-            self._show_update_prompt(sha)
+            QTimer.singleShot(1600, self._do_update)
         else:
             self._step_timer.start()
             self._step()
 
-    def _show_update_prompt(self, sha: str):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Update Available")
-        msg.setText(
-            f"A new version is available (commit {sha}).\n\n"
-            "The app will rebuild from source and restart automatically.\n\n"
-            "Update now?")
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            self._task_lbl.setText("Rebuilding executable — please wait…")
-            updater = AutoUpdater()
-            threading.Thread(
-                target=updater.rebuild_and_restart,
-                daemon=True, name="SplashRebuild").start()
-            QTimer.singleShot(2500, self._begin_fade_out)
-        else:
-            self._task_lbl.setText("Update skipped — continuing…")
-            self._bar_target = 0.0
-            self._bar_value  = 0.0
-            self._task_idx   = 1
-            self._step_timer.start()
-            self._step()
+    def _do_update(self):
+        self._task_lbl.setText("Launching build pipeline — closing app…")
+        updater = AutoUpdater()
+        threading.Thread(
+            target=updater.rebuild_and_restart,
+            daemon=False,
+            name="SplashRebuild").start()
+        QTimer.singleShot(1800, self._begin_fade_out)
 
     def _begin_fade_out(self):
         self._step_timer.stop()
@@ -1704,23 +1694,11 @@ class SplashScreen(QWidget):
 # AUTO-UPDATER
 
 class AutoUpdater(QObject):
-    """
-    Checks GitHub for new commits on the main branch.
-    When an update is found:
-      1. Downloads the latest build.bat from the repo
-      2. Replaces the local build.bat (if one exists next to the .exe)
-      3. Runs build.bat --update <exe_path> which rebuilds and restarts the app
-
-    Works from both frozen .exe (has _BUILT_SHA) and dev source (always checks).
-    """
-    update_available = Signal(str)   # emits latest commit SHA
-
-    _RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
+    update_available = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Embedded at build time by build.bat stamping step
-        self._built_sha: str = getattr(self, "_BUILT_SHA", "")
+        self._built_sha: str = getattr(self.__class__, "_BUILT_SHA", "")
 
     @property
     def _is_frozen(self) -> bool:
@@ -1753,46 +1731,44 @@ class AutoUpdater(QObject):
             pass
 
     def rebuild_and_restart(self):
-        """
-        1. Download latest build.bat from GitHub
-        2. Update local build.bat next to the exe
-        3. Run it with --update flag to rebuild and restart
-        """
-        if not GITHUB_REPO:
-            return
-        try:
-            # Download latest build.bat
-            bat_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
-            req = urllib.request.Request(bat_url, headers={"User-Agent": "SniperApp/AutoUpdater"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                bat_bytes = resp.read()
+        bat = self._exe_dir / "build.bat"
 
-            # Always write CRLF (Windows requirement)
-            bat_text = bat_bytes.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-            bat_crlf = bat_text.replace("\n", "\r\n").encode("utf-8")
-
-            # 1. Update the local build.bat next to the exe (so future manual runs are fresh)
-            local_bat = self._exe_dir / "build.bat"
+        if not bat.exists() and GITHUB_REPO:
             try:
-                local_bat.write_bytes(bat_crlf)
-            except Exception:
-                pass  # Not critical if we can't update it
+                bat_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
+                req = urllib.request.Request(bat_url, headers={"User-Agent": "SniperApp/AutoUpdater"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    raw = resp.read()
+                text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+                bat.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+            except Exception as exc:
+                print(f"[AutoUpdater] Could not download build.bat: {exc}")
+                return
 
-            # 2. Write to temp for execution
-            temp_dir = Path(os.getenv("TEMP", str(self._exe_dir))) / "SniperUpdate"
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            run_bat = temp_dir / "update.bat"
-            run_bat.write_bytes(bat_crlf)
+        if not bat.exists():
+            print("[AutoUpdater] build.bat not found — cannot update.")
+            return
 
-            current_exe = str(sys.executable)
+        if self._is_frozen:
+            target_exe = str(sys.executable)
+        else:
+            target_exe = str(self._exe_dir / f"{EXE_NAME}.exe")
+
+        try:
             subprocess.Popen(
-                ["cmd.exe", "/c", str(run_bat), "--update", current_exe],
+                ["cmd.exe", "/c", str(bat), "--update", target_exe],
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
+                cwd=str(self._exe_dir),
             )
-            QApplication.instance().quit()
-            sys.exit(0)
         except Exception as exc:
-            print(f"[AutoUpdater] rebuild_and_restart failed: {exc}")
+            print(f"[AutoUpdater] Failed to launch build.bat: {exc}")
+            return
+
+        try:
+            QApplication.instance().quit()
+        except Exception:
+            pass
+        sys.exit(0)
 
 # TITLE BAR
 
@@ -3800,24 +3776,14 @@ class MainWindow(QMainWindow):
         if self._br: self._br.reload(cfg)
 
     def _on_update_available(self, sha: str):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Update Available")
-        msg.setText(
-            f"A new version is available (commit {sha}).\n\n"
-            "The app will rebuild from source and restart automatically.\n\n"
-            "Update now?")
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            self._pd.show_notification(
-                f"Rebuilding from source (commit {sha})…", "warning")
-            self._stop()
-            threading.Thread(
-                target=self._updater.rebuild_and_restart,
-                daemon=True, name="AutoRebuild").start()
-        else:
-            self._pd.show_notification(f"Update {sha} skipped.", "warning")
+        self._pd.show_notification(
+            f"New version detected ({sha}) — rebuilding automatically…", "warning")
+        e = LogEntry(LogLevel.WARN, f"[UPDATE] New commit detected ({sha}), launching build pipeline…")
+        self._pl.append(e); self._pd.append(e, self._dev)
+        self._stop()
+        threading.Thread(
+            target=self._updater.rebuild_and_restart,
+            daemon=False, name="AutoRebuild").start()
 
     def _is_snipe_log(self, e: LogEntry) -> bool:
         if e.level in (LogLevel.SNIPE, LogLevel.SUCCESS, LogLevel.ERROR, LogLevel.WARN):
