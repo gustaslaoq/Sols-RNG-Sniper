@@ -3369,20 +3369,18 @@ class NotificationsPage(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BlacklistPage(QWidget):
-    """
-    Manages the user blacklist — shows all blacklisted Discord users,
-    lets the operator remove entries, and displays offense counts.
-    Requires core.blacklist.BlacklistManager (optional dependency).
-    """
+    _fetch_done = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._manager = None   # set via set_manager()
+        self._manager = None
+        self._cfg_ref  = None
+        self._fetch_done.connect(self._on_fetch_done)
         self._build()
 
-    def set_manager(self, manager):
-        """Inject the BlacklistManager instance from the engine."""
+    def set_manager(self, manager, cfg=None):
         self._manager = manager
+        self._cfg_ref  = cfg
         self.refresh()
 
     def _build(self):
@@ -3390,11 +3388,10 @@ class BlacklistPage(QWidget):
         lay.setContentsMargins(26, 22, 26, 16)
         lay.setSpacing(14)
 
-        # Header
         hdr = QHBoxLayout()
         col = QVBoxLayout(); col.setSpacing(3)
         col.addWidget(lbl("Blacklist", "PageTitle"))
-        col.addWidget(lbl("Users who sent fake or invalid links are listed here.", "PageSub"))
+        col.addWidget(lbl("Users blocked from triggering snipes.", "PageSub"))
         hdr.addLayout(col); hdr.addStretch()
 
         refresh_btn = QPushButton("⟳ Refresh")
@@ -3410,11 +3407,32 @@ class BlacklistPage(QWidget):
         lay.addLayout(hdr)
         lay.addWidget(hdiv())
 
-        # Stat label
+        add_card = QFrame(); add_card.setObjectName("SettCard")
+        add_lay  = QVBoxLayout(add_card)
+        add_lay.setContentsMargins(14, 12, 14, 12); add_lay.setSpacing(8)
+        add_lay.addWidget(lbl("ADD USER MANUALLY", "GrpLabel"))
+
+        input_row = QHBoxLayout(); input_row.setSpacing(8)
+        self._add_id_input = QLineEdit()
+        self._add_id_input.setPlaceholderText("Discord User ID  (e.g. 123456789012345678)")
+        self._add_id_input.returnPressed.connect(self._add_manual)
+        input_row.addWidget(self._add_id_input)
+
+        add_btn = QPushButton("+ Add")
+        add_btn.setObjectName("SmallBtn")
+        add_btn.setFixedWidth(68)
+        add_btn.clicked.connect(self._add_manual)
+        input_row.addWidget(add_btn)
+        add_lay.addLayout(input_row)
+
+        self._add_status = QLabel("")
+        self._add_status.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
+        add_lay.addWidget(self._add_status)
+        lay.addWidget(add_card)
+
         self._stat_lbl = lbl("0 users blacklisted", "FieldHint")
         lay.addWidget(self._stat_lbl)
 
-        # Scroll list
         scroll = SmoothScrollArea(); scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3425,7 +3443,6 @@ class BlacklistPage(QWidget):
         scroll.setWidget(self._wrap)
         lay.addWidget(scroll)
 
-        # Empty state placeholder
         self._empty_lbl = QLabel("No blacklisted users.")
         self._empty_lbl.setStyleSheet(
             f"color: {C['dim']}; font-size: 12px; padding: 20px;")
@@ -3435,15 +3452,54 @@ class BlacklistPage(QWidget):
 
         self._rows: list[QFrame] = []
 
+    def _add_manual(self):
+        uid = self._add_id_input.text().strip()
+        if not uid or not uid.isdigit():
+            self._add_status.setStyleSheet(f"color: {C['red2']}; font-size: 10px;")
+            self._add_status.setText("Enter a valid numeric Discord User ID.")
+            return
+        if not self._manager:
+            self._add_status.setStyleSheet(f"color: {C['red2']}; font-size: 10px;")
+            self._add_status.setText("Start the sniper first to enable the blacklist.")
+            return
+        self._add_status.setStyleSheet(f"color: {C['yellow']}; font-size: 10px;")
+        self._add_status.setText("Looking up username…")
+        sig = self._fetch_done
+        token = (self._cfg_ref.token if self._cfg_ref else "")
+
+        def _fetch():
+            username = uid
+            try:
+                import urllib.request as _ur
+                headers = {"Authorization": token, "User-Agent": "SniperApp/1.0"}
+                req = _ur.Request(
+                    f"https://discord.com/api/v10/users/{uid}", headers=headers)
+                with _ur.urlopen(req, timeout=6) as r:
+                    data = json.loads(r.read())
+                username = data.get("username") or data.get("global_name") or uid
+            except Exception:
+                pass
+            sig.emit(uid, username)
+
+        threading.Thread(target=_fetch, daemon=True, name="BLFetch").start()
+
+    def _on_fetch_done(self, uid: str, username: str):
+        if not self._manager:
+            return
+        self._manager.add(uid, username, reason=REASON_MANUAL)
+        self._add_id_input.clear()
+        self._add_status.setStyleSheet(f"color: {C['green2']}; font-size: 10px;")
+        self._add_status.setText(f"Added: {username} ({uid})")
+        self.refresh()
+
     def refresh(self):
-        """Re-read entries from BlacklistManager and rebuild the list."""
         for row in self._rows:
             self._list_lay.removeWidget(row)
             row.deleteLater()
         self._rows.clear()
 
         if self._manager is None:
-            self._stat_lbl.setText("Blacklist system not loaded.")
+            self._stat_lbl.setText("Start the sniper to load the blacklist.")
             self._empty_lbl.setVisible(True)
             return
 
@@ -3462,13 +3518,24 @@ class BlacklistPage(QWidget):
         lay.setContentsMargins(14, 10, 14, 10); lay.setSpacing(10)
 
         col = QVBoxLayout(); col.setSpacing(2)
-        name_lbl = QLabel(entry.username or "unknown")
+
+        display = entry.username if entry.username and entry.username != entry.user_id \
+            else "Unknown User"
+        name_lbl = QLabel(display)
         name_lbl.setStyleSheet(
             f"color: {C['text']}; font-size: 12px; font-weight: 600;")
-        reason_lbl = QLabel(f"Reason: {entry.reason}  ·  Offenses: {entry.count}")
-        reason_lbl.setStyleSheet(
-            f"color: {C['muted']}; font-size: 10px;")
-        col.addWidget(name_lbl); col.addWidget(reason_lbl)
+        col.addWidget(name_lbl)
+
+        meta_parts = []
+        if entry.user_id:
+            meta_parts.append(f"ID: {entry.user_id}")
+        if entry.reason:
+            meta_parts.append(f"Reason: {entry.reason}")
+        meta_parts.append(f"Offenses: {entry.count}")
+        reason_lbl = QLabel("  ·  ".join(meta_parts))
+        reason_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 10px;")
+        col.addWidget(reason_lbl)
+
         lay.addLayout(col); lay.addStretch()
 
         badge = QLabel(str(entry.count))
@@ -3828,7 +3895,7 @@ class MainWindow(QMainWindow):
 
         # Wire subsystem pages to the engine's injected managers
         engine = self._br.engine
-        self._pbl.set_manager(engine.blacklist)
+        self._pbl.set_manager(engine.blacklist, self._cfg)
         # Sync the plugins page to the engine's loader (may differ from startup loader)
         self._ppg.set_loader(engine._plugins)
         self._startup_plugin_loader = engine._plugins
