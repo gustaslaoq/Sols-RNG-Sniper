@@ -163,7 +163,7 @@ if "%UPDATE_MODE%"=="1" (
     :do_launch
     echo  Old process exited. Launching new version...
     timeout /t 3 /nobreak >nul
-    powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%TARGET_EXE%' -WorkingDirectory (Split-Path '%TARGET_EXE%')"
+    start "" "%TARGET_EXE%"
     exit /b 0
 )
 
