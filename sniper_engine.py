@@ -690,14 +690,12 @@ class ProfileFilter:
         self._cfg = config
 
     def evaluate(self, text: str) -> Optional[SnipeProfile]:
-        profiles = self._cfg.profiles
-        global_p = next((p for p in profiles if p.locked), None)
+        profiles  = self._cfg.profiles
+        global_p  = next((p for p in profiles if p.locked), None)
 
-        # Global profile blacklist applies first — acts as a global gate
         if global_p and global_p.enabled and global_p.matches_blacklist(text):
             return None
 
-        # Evaluate non-locked profiles sorted by priority (ascending; lower = higher priority)
         sorted_profiles = sorted(
             (p for p in profiles if not p.locked and p.enabled),
             key=lambda p: p.priority,
@@ -710,6 +708,36 @@ class ProfileFilter:
                 return p
 
         return None
+
+    def evaluate_detailed(self, text: str) -> tuple:
+        profiles  = self._cfg.profiles
+        global_p  = next((p for p in profiles if p.locked), None)
+
+        if global_p and global_p.enabled and global_p.matches_blacklist(text):
+            hit = next(
+                (m.group(0) for pat in global_p._compiled_blacklist
+                 if (m := pat.search(text))),
+                "?"
+            )
+            return None, f"global blacklist keyword '{hit}'"
+
+        sorted_profiles = sorted(
+            (p for p in profiles if not p.locked and p.enabled),
+            key=lambda p: p.priority,
+        )
+
+        for p in sorted_profiles:
+            if p.matches_blacklist(text):
+                hit = next(
+                    (m.group(0) for pat in p._compiled_blacklist
+                     if (m := pat.search(text))),
+                    "?"
+                )
+                return None, f"profile '{p.name}' blacklist keyword '{hit}'"
+            if p.matches_triggers(text):
+                return p, ""
+
+        return None, "no profile trigger matched"
 
     def rebuild(self):
         for p in self._cfg.profiles:
@@ -853,14 +881,6 @@ class DiscordGateway:
         content = data.get("content",    "")
         author  = data.get("author",     {})
 
-        # Fast substring filter: skip if no "roblox" keyword at all
-        raw_lower = content.lower()
-        if "roblox" not in raw_lower and "rb.gy" not in raw_lower \
-                and "bit.ly" not in raw_lower and "discord.gg" not in raw_lower:
-            # Still scan embeds but do cheap check first
-            pass
-
-        # Merge embed text into full_content for scanning
         embed_parts = []
         for embed in data.get("embeds", []):
             if not isinstance(embed, dict):
@@ -882,11 +902,14 @@ class DiscordGateway:
             known_guilds = {c.guild_id for c in self.config.monitored_channels}
             if guild in known_guilds:
                 self.on_log(LogEntry(LogLevel.WARN,
-                    f"[CONFIG] Message in known guild — channel '{ch}' not monitored"))
+                    f"[CONFIG] Message in known server — channel {ch} is not monitored"))
+            else:
+                self.on_log(LogEntry(LogLevel.DEBUG,
+                    f"[MSG] Ignored — channel {ch} not in monitored list", dev_only=True))
             return
 
         self.on_log(LogEntry(LogLevel.DEBUG,
-            f"[#{ch}] {astr}: {content[:80]}", dev_only=True))
+            f"[MSG] #{ch} | {astr}: {content[:80]}", dev_only=True))
 
         await self.on_message(guild, ch, msg_id, content, astr, full_content)
 
@@ -1165,11 +1188,16 @@ class SniperEngine:
     async def _on_discord_message(self, guild_id: str, channel_id: str,
                                   msg_id: str, content: str, author: str, full: str):
         if self._paused:
+            self._log(LogLevel.DEBUG, f"[MSG] Skipped — engine is paused", dev_only=True)
             return
 
         self.metrics["messages_scanned"] += 1
+        self._log(LogLevel.DEBUG,
+            f"[MSG] Processing from {author}: {content[:60]}", dev_only=True)
 
         if msg_id and msg_id in self._seen_msg_ids:
+            self._log(LogLevel.DEBUG,
+                f"[DEDUP] Message ID already processed — skip", dev_only=True)
             return
         if msg_id:
             self._seen_msg_ids.append(msg_id)
@@ -1178,32 +1206,44 @@ class SniperEngine:
         if self.blacklist and author_id and self.blacklist.is_blacklisted(author_id):
             entry = self.blacklist.get_entry(author_id)
             self._log(LogLevel.WARN,
-                f"[BLACKLIST] Skipped message from {author} "
-                f"(reason: {entry.reason if entry else '?'})")
+                f"[BLACKLIST] Blocked {author} — reason: {entry.reason if entry else '?'}")
             return
 
-        profile = self._filter.evaluate(full) if self._filter else None
+        profile, reject_reason = (
+            self._filter.evaluate_detailed(full) if self._filter else (None, "no filter")
+        )
         if profile is None:
-            self._log(LogLevel.DEBUG,
-                f"[FILTER] No profile matched — {author}: {content[:60]}", dev_only=True)
+            has_link = bool(self._resolver.extract_roblox_link(full))
+            if has_link:
+                self._log(LogLevel.INFO,
+                    f"[FILTER] Link detected but blocked — {reject_reason} — "
+                    f"{author}: {content[:60]}")
+            else:
+                self._log(LogLevel.DEBUG,
+                    f"[FILTER] Skipped — {reject_reason} — {author}: {content[:60]}",
+                    dev_only=True)
             return
+
+        self._log(LogLevel.DEBUG,
+            f"[FILTER] Profile '{profile.name}' matched — scanning for link", dev_only=True)
 
         link = self._resolver.extract_roblox_link(full)
         if not link:
-            self._log(LogLevel.DEBUG,
-                f"[FILTER] Profile '{profile.name}' matched but no Roblox link — "
-                f"{author}: {content[:60]}", dev_only=True)
+            self._log(LogLevel.INFO,
+                f"[FILTER] Profile '{profile.name}' matched but no Roblox link found — "
+                f"{author}: {content[:60]}")
             return
 
         self.metrics["links_detected"] += 1
-
         place_id, code, uri = link
+        self._log(LogLevel.DEBUG,
+            f"[LINK] Extracted URI: {uri[:80]}", dev_only=True)
 
         now = time.monotonic()
         if uri in self._recent_servers and now < self._recent_servers[uri]:
             remaining = self._recent_servers[uri] - now
             self._log(LogLevel.INFO,
-                f"[DEDUP] Same server link seen {remaining:.1f}s ago — skipping")
+                f"[DEDUP] Same server link posted {remaining:.1f}s ago — skipping")
             return
         self._recent_servers[uri] = now + self._SERVER_DEDUP_TTL
 
