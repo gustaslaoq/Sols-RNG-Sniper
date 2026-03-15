@@ -785,31 +785,6 @@ class WebhookSender:
             embed["description"] = f"**{uid} (@{uname})** has been blacklisted for deleting their message."
             embed["color"]       = 0xc0392b
 
-        elif event_type == "owner_info":
-            if not getattr(self.config, "on_owner_info", True):
-                return
-            username      = kwargs.get("username", "?")
-            display_name  = kwargs.get("display_name", username)
-            user_id       = kwargs.get("user_id", "?")
-            avatar_url    = kwargs.get("avatar_url", "")
-            creation_date = kwargs.get("creation_date", "?")
-            profile_url   = kwargs.get("profile_url", "")
-
-            embed["title"] = "[ Private Server Owner Info ]"
-            embed["color"] = 0xFFFFFF
-            if avatar_url:
-                embed["thumbnail"] = {"url": avatar_url}
-
-            uname_val = f"{display_name} ({username})" if display_name != username else username
-            embed["fields"] = [
-                {"name": "Username",      "value": uname_val,    "inline": True},
-                {"name": "User ID",       "value": str(user_id), "inline": True},
-                {"name": "Creation Date", "value": creation_date, "inline": False},
-            ]
-            if profile_url:
-                embed["fields"].append(
-                    {"name": "Profile", "value": profile_url, "inline": False})
-
         else:
             return
 
@@ -1318,13 +1293,9 @@ class Bridge(QObject):
         def _on_snipe(data: dict):
             hist.record(data)
             self.sig_snipe.emit(data)
-            # Fire webhook in engine loop if running
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._send_snipe_webhook(data), self._loop)
-                # Owner info lookup (async, non-blocking)
-                asyncio.run_coroutine_threadsafe(
-                    self._fetch_and_send_owner_info(data), self._loop)
 
         def _on_biome(exp: str, det: str, ok: bool):
             hist.update_last_biome(ok)
@@ -1353,208 +1324,6 @@ class Bridge(QObject):
             sess   = await self._get_webhook_session()
             sender = WebhookSender(sess, self._cfg.webhook)
             await sender.send(event_type)
-        except Exception:
-            pass
-
-    async def _fetch_and_send_owner_info(self, snipe_data: dict):
-        """Fetch private server owner from Roblox API (requires .ROBLOSECURITY cookie)."""
-        if not self._cfg.owner_info_enabled:
-            return
-        if not self._cfg.webhook.enabled or not self._cfg.webhook.url:
-            return
-
-        cookie = getattr(self._cfg, "roblox_cookie", "").strip()
-        if not cookie:
-            self._log_owner("[OWNER] No Roblox cookie configured — owner lookup disabled")
-            return
-
-        place_id = snipe_data.get("place_id", "")
-        code     = snipe_data.get("code", "")
-
-        if not place_id or not code or place_id == "0":
-            self._log_owner(f"[OWNER] Skipped — no valid place_id/code (place='{place_id}')")
-            return
-
-        self._log_owner(f"[OWNER] Starting lookup: place_id={place_id}, code={code[:14]}…")
-
-        # Auth headers using the Roblox session cookie
-        auth_headers = {
-            "Cookie":     f".ROBLOSECURITY={cookie}",
-            "User-Agent": "Roblox/WinInet",
-        }
-
-        try:
-            sess = await self._get_webhook_session()
-
-            # ── Step 1: resolve universe ID from place ID ─────────────────
-            universe_id = None
-            try:
-                async with sess.get(
-                    f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    self._log_owner(f"[OWNER] Universe status: {r.status}")
-                    if r.status == 200:
-                        universe_id = (await r.json()).get("universeId")
-                        self._log_owner(f"[OWNER] universe_id={universe_id}")
-                    else:
-                        body = await r.text()
-                        self._log_owner(f"[OWNER] Universe error: {body[:120]}")
-            except Exception as exc:
-                self._log_owner(f"[OWNER] Universe request failed: {exc}")
-
-            if not universe_id:
-                self._log_owner("[OWNER] No universe_id — aborting")
-                return
-
-            # ── Step 2: get CSRF token (required for authenticated requests) ──
-            csrf_token = ""
-            try:
-                async with sess.post(
-                    "https://auth.roblox.com/v2/logout",
-                    headers=auth_headers,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    csrf_token = r.headers.get("x-csrf-token", "")
-                    self._log_owner(
-                        f"[OWNER] CSRF token: {'obtained' if csrf_token else 'not found'}")
-            except Exception as exc:
-                self._log_owner(f"[OWNER] CSRF request failed: {exc}")
-
-            auth_headers_csrf = {**auth_headers, "x-csrf-token": csrf_token}
-
-            # ── Step 3: get private server info → owner ID ────────────────
-            owner_id = None
-            try:
-                async with sess.get(
-                    f"https://games.roblox.com/v1/games/{universe_id}"
-                    f"/private-server-invite?privateServerLinkCode={code}",
-                    headers=auth_headers_csrf,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    self._log_owner(f"[OWNER] private-server-invite status: {r.status}")
-                    if r.status == 200:
-                        data      = await r.json()
-                        self._log_owner(f"[OWNER] invite keys: {list(data.keys())}")
-                        owner_obj = (data.get("owner")
-                                     or (data.get("vipServer") or {}).get("owner")
-                                     or {})
-                        owner_id  = str(owner_obj.get("id") or owner_obj.get("userId") or "").strip()
-                        self._log_owner(f"[OWNER] owner_id: '{owner_id}'")
-                    else:
-                        body = await r.text()
-                        self._log_owner(f"[OWNER] invite error ({r.status}): {body[:120]}")
-            except Exception as exc:
-                self._log_owner(f"[OWNER] invite request failed: {exc}")
-
-            # Fallback: enumerate own private servers
-            if not owner_id:
-                self._log_owner("[OWNER] Trying fallback private-servers list…")
-                try:
-                    async with sess.get(
-                        f"https://games.roblox.com/v2/universes/{universe_id}"
-                        f"/private-servers?limit=50",
-                        headers=auth_headers_csrf,
-                        timeout=aiohttp.ClientTimeout(total=8),
-                    ) as r:
-                        self._log_owner(f"[OWNER] fallback status: {r.status}")
-                        if r.status == 200:
-                            items = (await r.json()).get("data", [])
-                            self._log_owner(f"[OWNER] fallback returned {len(items)} items")
-                            for item in items:
-                                if str(item.get("privateServerLinkCode", "")) == code:
-                                    owner_id = str((item.get("owner") or {}).get("id", "")).strip()
-                                    self._log_owner(f"[OWNER] matched → owner_id={owner_id}")
-                                    break
-                        else:
-                            body = await r.text()
-                            self._log_owner(f"[OWNER] fallback error: {body[:120]}")
-                except Exception as exc:
-                    self._log_owner(f"[OWNER] fallback failed: {exc}")
-
-            if not owner_id:
-                self._log_owner("[OWNER] owner_id empty after all attempts — aborting")
-                return
-
-            # ── Step 4: get Roblox user profile ──────────────────────────
-            username     = owner_id
-            display_name = owner_id
-            created_iso  = ""
-            try:
-                async with sess.get(
-                    f"https://users.roblox.com/v1/users/{owner_id}",
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    self._log_owner(f"[OWNER] user profile status: {r.status}")
-                    if r.status == 200:
-                        u = await r.json()
-                        username     = u.get("name", owner_id)
-                        display_name = u.get("displayName", username)
-                        created_iso  = u.get("created", "")
-                        self._log_owner(
-                            f"[OWNER] user={username}, display={display_name}, "
-                            f"created={created_iso[:10]}")
-            except Exception as exc:
-                self._log_owner(f"[OWNER] user profile failed: {exc}")
-
-            # ── Step 5: get avatar headshot ───────────────────────────────
-            avatar_url = ""
-            try:
-                async with sess.get(
-                    f"https://thumbnails.roblox.com/v1/users/avatar-headshot"
-                    f"?userIds={owner_id}&size=150x150&format=Png&isCircular=false",
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    if r.status == 200:
-                        imgs       = (await r.json()).get("data") or []
-                        avatar_url = imgs[0].get("imageUrl", "") if imgs else ""
-                        self._log_owner(f"[OWNER] avatar: {'found' if avatar_url else 'empty'}")
-            except Exception as exc:
-                self._log_owner(f"[OWNER] avatar failed: {exc}")
-
-            # ── Step 6: format creation date ─────────────────────────────
-            creation_date = "Unknown"
-            if created_iso:
-                try:
-                    import datetime as _dt
-                    created_dt = _dt.datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
-                    now_dt     = _dt.datetime.now(_dt.timezone.utc)
-                    delta      = now_dt - created_dt
-                    years      = delta.days // 365
-                    months     = (delta.days % 365) // 30
-                    days_rem   = delta.days % 30
-                    if years >= 1:
-                        creation_date = f"{years} year{'s' if years != 1 else ''} ago"
-                    elif months >= 1:
-                        creation_date = f"{months} month{'s' if months != 1 else ''} ago"
-                    else:
-                        creation_date = f"{max(1, days_rem)} day{'s' if days_rem != 1 else ''} ago"
-                    self._log_owner(f"[OWNER] creation_date='{creation_date}'")
-                except Exception as exc:
-                    creation_date = created_iso[:10] if created_iso else "Unknown"
-                    self._log_owner(f"[OWNER] date format error: {exc}")
-
-            # ── Step 7: send webhook embed ────────────────────────────────
-            self._log_owner(
-                f"[OWNER] Sending embed — {username} ({owner_id}), created {creation_date}")
-            sender = WebhookSender(sess, self._cfg.webhook)
-            await sender.send(
-                "owner_info",
-                username=username,
-                display_name=display_name,
-                user_id=owner_id,
-                avatar_url=avatar_url,
-                creation_date=creation_date,
-                profile_url=f"https://www.roblox.com/users/{owner_id}/profile",
-            )
-            self._log_owner("[OWNER] Webhook sent successfully")
-        except Exception as exc:
-            self._log_owner(f"[OWNER] Unhandled exception: {exc}")
-
-    def _log_owner(self, message: str):
-        """Log owner lookup messages — always visible in Logs (not dev_only) for easy debugging."""
-        try:
-            self.engine.on_log(LogEntry(LogLevel.INFO, message))
         except Exception:
             pass
 
@@ -1702,75 +1471,100 @@ class PropagatingListWidget(QListWidget):
 
 class SmoothScrollArea(QScrollArea):
     """
-    Scroll area with momentum-based smooth scrolling.
-    - Only handles wheel events when the scrollbar has room to move
-    - Doesn't steal events when a nested scrollable widget (list, text) is under the cursor
-    - Uses a velocity/friction model instead of teleporting jumps
+    Scroll area with momentum-based smooth scrolling and smart child delegation.
+
+    Child delegation rule:
+    - If the mouse has been hovering over a scrollable child widget for more
+      than HOVER_MS milliseconds, wheel events go to that child.
+    - If the mouse is moving quickly across children (fast scroll through page),
+      the outer page handles all scroll — nested widgets don't steal.
+
+    This means: scrolling fast through the page always works. Only when you
+    deliberately rest the mouse over a list/text area does that widget take over.
     """
+    HOVER_MS   = 180    # ms the mouse must dwell over a child before it "owns" scroll
+    STEP_PX    = 80     # pixels per scroll notch
+    EASE       = 0.20   # easing factor per frame (higher = snappier)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._velocity   = 0.0
-        self._target     = 0.0
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(12)   # ~83 fps
+        self._target      = 0.0
+        self._anim_timer  = QTimer(self)
+        self._anim_timer.setInterval(12)
         self._anim_timer.timeout.connect(self._tick)
+
+        # Hover tracking
+        self._hover_child  = None   # which scrollable child is under mouse
+        self._hover_start  = 0.0    # monotonic time when hover began
+        self.setMouseTracking(True)
 
     def _tick(self):
         bar  = self.verticalScrollBar()
         diff = self._target - bar.value()
-        if abs(diff) < 0.5:
-            bar.setValue(int(self._target))
+        if abs(diff) < 0.8:
+            bar.setValue(int(round(self._target)))
             self._anim_timer.stop()
             return
-        # Exponential ease — 22% of remaining distance per frame
-        bar.setValue(int(bar.value() + diff * 0.22))
+        bar.setValue(int(round(bar.value() + diff * self.EASE)))
+
+    def _scrollable_child_at(self, pos) -> Optional["QWidget"]:
+        """Return the innermost scrollable widget under pos (in self coords), or None."""
+        child = self.widget()
+        if not child:
+            return None
+        # Convert to inner widget coordinates
+        inner_pos = child.mapFrom(self, pos)
+        w = child.childAt(inner_pos)
+        # Walk up looking for a QAbstractScrollArea (but not self)
+        from PySide6.QtWidgets import QAbstractScrollArea
+        while w is not None and w is not self and w is not child:
+            if isinstance(w, QAbstractScrollArea):
+                sb = w.verticalScrollBar()
+                if sb and sb.minimum() < sb.maximum():
+                    return w
+            w = w.parent()
+        return None
+
+    def mouseMoveEvent(self, e):
+        pos   = e.position().toPoint()
+        child = self._scrollable_child_at(pos)
+        if child is not self._hover_child:
+            self._hover_child = child
+            self._hover_start = time.monotonic()
+        super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover_child = None
+        self._hover_start = 0.0
+        super().leaveEvent(e)
 
     def wheelEvent(self, e):
         bar = self.verticalScrollBar()
-        # If there's nothing to scroll, pass the event up
         if bar.minimum() == bar.maximum():
             e.ignore()
             return
 
-        # Don't steal if cursor is over a nested widget that can scroll
-        child = self.widget()
-        if child:
-            pos = child.mapFrom(self, e.position().toPoint())
-            under = child.childAt(pos)
-            if under and self._child_can_scroll(under, e.angleDelta().y()):
+        # Check if the mouse has been dwelling over a scrollable child long enough
+        if (self._hover_child is not None
+                and time.monotonic() - self._hover_start >= self.HOVER_MS / 1000.0):
+            child = self._hover_child
+            sb    = child.verticalScrollBar()
+            delta = e.angleDelta().y()
+            at_top = sb.value() == sb.minimum()
+            at_bot = sb.value() == sb.maximum()
+            if (delta > 0 and not at_top) or (delta < 0 and not at_bot):
+                # Child still has room — delegate
                 e.ignore()
                 return
 
+        # Outer page handles this scroll
         steps = e.angleDelta().y() / 120.0
-        step  = max(60, bar.singleStep() * 4)   # pixels per notch
-        self._target = max(bar.minimum(),
-                           min(bar.maximum(), self._target - steps * step))
+        self._target = max(float(bar.minimum()),
+                           min(float(bar.maximum()),
+                               self._target - steps * self.STEP_PX))
         if not self._anim_timer.isActive():
             self._anim_timer.start()
         e.accept()
-
-    @staticmethod
-    def _child_can_scroll(widget, delta_y: int) -> bool:
-        """Return True if widget is a scrollable that can actually scroll in the given direction."""
-        from PySide6.QtWidgets import QAbstractScrollArea, QAbstractItemView
-        # Walk up to find the nearest scrollable ancestor (but stop at our own boundary)
-        w = widget
-        for _ in range(6):
-            if w is None:
-                break
-            if isinstance(w, (QAbstractScrollArea, QAbstractItemView)):
-                sb = w.verticalScrollBar() if hasattr(w, 'verticalScrollBar') else None
-                if sb and sb.minimum() != sb.maximum():
-                    going_up = delta_y > 0
-                    at_top   = sb.value() == sb.minimum()
-                    at_bot   = sb.value() == sb.maximum()
-                    # The child CAN handle this scroll if it has room in that direction
-                    if going_up and not at_top:
-                        return True
-                    if not going_up and not at_bot:
-                        return True
-            w = w.parent()
-        return False
 
 
 class EdgeCursorFilter(QObject):
@@ -3926,7 +3720,6 @@ class NotificationsPage(QWidget):
         wl.setContentsMargins(0, 2, 6, 10); wl.setSpacing(14)
         wl.addWidget(self._sec_desktop())
         wl.addWidget(self._sec_webhook())
-        wl.addWidget(self._sec_owner_info())
         wl.addStretch()
         scroll.setWidget(wrap); lay.addWidget(scroll)
 
@@ -3984,14 +3777,12 @@ class NotificationsPage(QWidget):
         self._wh_on_biome  = QCheckBox("Biome verification")
         self._wh_on_start  = QCheckBox("Sniper started")
         self._wh_on_stop   = QCheckBox("Sniper stopped")
-        self._wh_on_owner  = QCheckBox("Private server owner info")
         self._wh_on_snipe.setChecked(wh.on_snipe)
         self._wh_on_biome.setChecked(wh.on_biome)
         self._wh_on_start.setChecked(wh.on_start)
         self._wh_on_stop.setChecked(wh.on_stop)
-        self._wh_on_owner.setChecked(getattr(wh, "on_owner_info", True))
         for chk in (self._wh_on_snipe, self._wh_on_biome,
-                    self._wh_on_start, self._wh_on_stop, self._wh_on_owner):
+                    self._wh_on_start, self._wh_on_stop):
             chk.toggled.connect(self._save_webhook); lay.addWidget(chk)
 
         lay.addWidget(hdiv())
@@ -4019,61 +3810,6 @@ class NotificationsPage(QWidget):
         lay.addWidget(test_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         return c
 
-    def _sec_owner_info(self) -> QFrame:
-        c, lay = self._card("Private Server Owner Info")
-        lay.addWidget(lbl(
-            "When a snipe fires, look up the Roblox account that owns the private server\n"
-            "and send a summary embed to your webhook.",
-            "FieldHint"))
-
-        self._chk_owner = QCheckBox("Enable private server owner lookup")
-        self._chk_owner.setChecked(getattr(self._cfg, "owner_info_enabled", False))
-        self._chk_owner.toggled.connect(self._save_owner_cfg)
-        lay.addWidget(self._chk_owner)
-
-        lay.addWidget(hdiv())
-
-        cookie_hdr = QHBoxLayout()
-        cookie_hdr.addWidget(lbl("Roblox Cookie (.ROBLOSECURITY)", "FieldLbl"))
-        cookie_hdr.addWidget(HelpIcon(
-            "Required for owner lookup — the Roblox private server API is not public.\n\n"
-            "How to get your cookie:\n"
-            "1. Open Roblox in your browser and log in\n"
-            "2. Press F12 → Application → Cookies → .roblox.com\n"
-            "3. Find .ROBLOSECURITY and copy its Value\n\n"
-            "This is stored locally and only used to query the Roblox API.\n"
-            "Never share this with anyone — it gives full access to your Roblox account."))
-        cookie_hdr.addStretch()
-        lay.addLayout(cookie_hdr)
-
-        self._roblox_cookie = QLineEdit(getattr(self._cfg, "roblox_cookie", ""))
-        self._roblox_cookie.setPlaceholderText(
-            "Paste .ROBLOSECURITY value here (optional)…")
-        self._roblox_cookie.setEchoMode(QLineEdit.EchoMode.Password)
-        self._roblox_cookie.textChanged.connect(self._save_owner_cfg)
-
-        show_ck = QCheckBox("Show")
-        show_ck.toggled.connect(lambda v: self._roblox_cookie.setEchoMode(
-            QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
-
-        ck_row = QHBoxLayout()
-        ck_row.addWidget(self._roblox_cookie)
-        ck_row.addWidget(show_ck)
-        lay.addLayout(ck_row)
-
-        lay.addWidget(lbl(
-            "Without a cookie, owner lookup will not work (Roblox API requires auth).\n"
-            "Sends a separate embed after each snipe with the owner's username, ID,\n"
-            "account creation date, and profile link.",
-            "FieldHint"))
-        return c
-
-    def _save_owner_cfg(self):
-        self._cfg.owner_info_enabled = self._chk_owner.isChecked()
-        self._cfg.roblox_cookie      = self._roblox_cookie.text().strip()
-        self._cfg.save()
-        self.config_changed.emit()
-
     def _on_ping_type(self, idx: int):
         self._ping_target_row.setVisible(idx in (1, 2))
         self._save_webhook()
@@ -4081,15 +3817,14 @@ class NotificationsPage(QWidget):
     def _save_webhook(self):
         ping_names = ["none", "role", "user"]
         wh = self._cfg.webhook
-        wh.url           = self._wh_url.text().strip()
-        wh.enabled       = self._wh_enabled.isChecked()
-        wh.on_snipe      = self._wh_on_snipe.isChecked()
-        wh.on_biome      = self._wh_on_biome.isChecked()
-        wh.on_start      = self._wh_on_start.isChecked()
-        wh.on_stop       = self._wh_on_stop.isChecked()
-        wh.on_owner_info = self._wh_on_owner.isChecked()
-        wh.ping_type     = ping_names[self._ping_combo.currentIndex()]
-        wh.ping_target   = self._ping_target.text().strip()
+        wh.url         = self._wh_url.text().strip()
+        wh.enabled     = self._wh_enabled.isChecked()
+        wh.on_snipe    = self._wh_on_snipe.isChecked()
+        wh.on_biome    = self._wh_on_biome.isChecked()
+        wh.on_start    = self._wh_on_start.isChecked()
+        wh.on_stop     = self._wh_on_stop.isChecked()
+        wh.ping_type   = ping_names[self._ping_combo.currentIndex()]
+        wh.ping_target = self._ping_target.text().strip()
         self._cfg.save()
         self.config_changed.emit()
 
