@@ -175,13 +175,12 @@ echo ==========================================
 echo.
 
 if "%UPDATE_MODE%"=="1" (
+    echo Starting updated version...
 
-echo Starting updated version...
+    timeout /t 2 /nobreak >nul
+    start "" "%TARGET_EXE%"
 
-start "" cmd /c "timeout /t 2 >nul && \"%TARGET_EXE%\""
-
-exit /b 0
-
+    exit /b 0
 )
 
 echo Press any key to launch
