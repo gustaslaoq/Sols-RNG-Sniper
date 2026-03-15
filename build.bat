@@ -108,14 +108,14 @@ echo  OK  .exe built
 
 echo [9/9] Installing...
 if "%UPDATE_MODE%"=="1" (
-    echo  Waiting for old process to exit...
-    timeout /t 4 /nobreak >nul
+    echo  Waiting for old process to fully exit...
+    timeout /t 6 /nobreak >nul
     set RETRY=0
     :copy_retry
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
     if not errorlevel 1 goto copy_ok
     set /a RETRY+=1
-    if !RETRY! geq 15 ( echo  [ERROR] Cannot replace exe after 15 attempts & goto die )
+    if !RETRY! geq 20 ( echo  [ERROR] Cannot replace exe after 20 attempts & goto die )
     timeout /t 1 /nobreak >nul
     goto copy_retry
     :copy_ok
@@ -155,8 +155,11 @@ echo.
 
 if "%UPDATE_MODE%"=="1" (
     echo.
-    echo  Update complete. Launching new version in 3 seconds...
-    timeout /t 3 /nobreak >nul
+    echo  ==========================================
+    echo   Update complete! Starting new version...
+    echo  ==========================================
+    echo.
+    timeout /t 5 /nobreak >nul
     start "" "%TARGET_EXE%"
     exit /b 0
 )
