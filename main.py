@@ -168,7 +168,7 @@ _setup_crash_reporter()
 
 APP_NAME      = "SLAOQ'S SOL'S RNG SNIPER"
 APP_VERSION   = "1.0"
-GITHUB_REPO   = "gustaslaoq/Sols-RNG-Sniper" 
+GITHUB_REPO   = "" 
 WIN_W         = 1200
 WIN_H         = 800
 WIN_MIN_W     = 980
@@ -181,14 +181,28 @@ SIDEBAR_LG    = 220
 TITLEBAR_H    = 38
 RESIZE_M      = 6
 
-def resource_path(relative_path):
+def resource_path(relative_path: str) -> str:
+    """Resolve path for both dev mode and PyInstaller frozen mode.
+    Checks assets/ subfolder first, then falls back to current dir / _MEIPASS."""
+    # When frozen by PyInstaller, _MEIPASS is the temp extraction dir
     try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+        base = sys._MEIPASS
+    except AttributeError:
+        base = os.path.abspath(".")
+    # Prefer assets/ subfolder next to the exe (so users can replace files)
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.abspath(".")
+    assets_path = os.path.join(exe_dir, "assets", relative_path)
+    if os.path.exists(assets_path):
+        return assets_path
+    # Fallback: bundled inside the exe via --add-data assets;assets
+    bundled = os.path.join(base, "assets", relative_path)
+    if os.path.exists(bundled):
+        return bundled
+    # Last resort: same folder
+    return os.path.join(base, relative_path)
 
 LOGO_PATH = Path(resource_path("logo.png"))
+ICO_PATH  = Path(resource_path("app.ico"))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1013,6 +1027,9 @@ class Edge:
 # MICRO HELPERS
 
 def create_taskbar_icon() -> QIcon:
+    # Prefer the proper .ico file (has multiple resolutions built-in)
+    if ICO_PATH.exists():
+        return QIcon(str(ICO_PATH))
     sz = 80
     if LOGO_PATH.exists():
         logo_pix = QPixmap(str(LOGO_PATH))
@@ -1108,7 +1125,16 @@ class Bridge(QObject):
         )
         cd = CooldownManager(cd_cfg)
 
-        pl = PluginLoader(Path("plugins"))
+        # Plugins folder must be next to the .exe, not relative to CWD.
+        # When frozen by PyInstaller sys.executable is the .exe path.
+        # When running as a script it falls back to the script's directory.
+        if getattr(sys, "frozen", False):
+            _base_dir = Path(os.path.dirname(sys.executable))
+        else:
+            _base_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        plugins_dir = _base_dir / "plugins"
+
+        pl = PluginLoader(plugins_dir)
         pl.discover()
 
         # ── Build engine with injected managers ───────────────────────────
@@ -3618,14 +3644,18 @@ class MainWindow(QMainWindow):
         engine = self._br.engine
         self._pbl.set_manager(engine.blacklist)
         self._ppg.set_loader(engine._plugins)
+        # Give plugins access to the live UI
         if engine._plugins:
             engine._plugins.init_all(engine=engine, ui=self)
 
+        # Explicit badge: connecting
         self._tb.badge.set_state("idle")
         self._pd.badge.set_state("idle")
         self._pd.c_status.set_value("CONNECTING")
 
+        # Custom Notification
         self._tray_notify("Sniper Started", "Monitoring channels…", get_tray_icon_img())
+        # Webhook — engine no longer sends lifecycle events, this is the single sender
         self._send_webhook("start")
 
         if self._is_paused: self._toggle_pause_state()
@@ -3638,10 +3668,14 @@ class MainWindow(QMainWindow):
         self._is_paused = False
         self._pd.on_stop()
 
+        # Explicit badge: stopped
         self._tb.badge.set_state("off")
         self._pd.badge.set_state("off")
         self._pd.c_status.set_value("STOPPED")
+
+        # Custom Notification
         self._tray_notify("Sniper Stopped", "Engine has been shut down.", get_tray_icon_img())
+        # Webhook
         self._send_webhook("stop")
 
     def _on_log(self, e: LogEntry):
@@ -3689,6 +3723,8 @@ class MainWindow(QMainWindow):
         title = f"Snipped — {profile_name}"
         msg   = f"Detected in server. ({n} total)"
         self._tray_notify(title, msg, get_tray_icon_img())
+
+        # Single webhook send — passes full dict as kwargs
         self._send_webhook("snipe", **data)
 
     def _on_ping(self, p: float):
@@ -3729,7 +3765,9 @@ class MainWindow(QMainWindow):
                 self._pd.c_ping.set_value(f"{self._br.ping_ms:.0f}")
             uptime = int(self._br.uptime_seconds)
             self._pd.c_uptime.set_value(str(uptime))
+            # Push engine metrics to the grid cards
             self._pd.update_engine_metrics(self._br.engine.metrics)
+        # Roblox running indicator (uses psutil — run import guard)
         try:
             from sniper_engine import ProcessManager
             self._pd.update_roblox_status(ProcessManager.is_roblox_running())
@@ -3833,12 +3871,16 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self._stop(); self._cfg.save(); e.accept()
 
+# ENTRY POINT
+
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+
+    # Apply default theme before UI is shown
     apply_theme("dark")
     app.setStyleSheet(make_qss())
 
@@ -3853,6 +3895,7 @@ def main():
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor(C["white"]))
     app.setPalette(pal)
 
+    # Splash screen → show main window when done
     splash = SplashScreen()
     win    = MainWindow()
 
