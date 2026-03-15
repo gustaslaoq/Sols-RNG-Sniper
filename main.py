@@ -743,17 +743,17 @@ class WebhookSender:
             }
 
             # Description: big join link then spacer
-            desc_lines = [f"{profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
+            desc_lines = [f"> #{profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
             if roblox_web_url and not roblox_web_url.startswith("roblox://"):
-                desc_lines.append(f"[ [Join Private Server Link]({roblox_web_url}) ]")
+                desc_lines.append(f"## [Join Private Server Link]({roblox_web_url})")
             elif jump_url:
-                desc_lines.append(f"[ [Jump to Original Message]({jump_url}) ]")
+                desc_lines.append(f"[Jump to Original Message]({jump_url})")
             embed["description"] = "\n".join(desc_lines)
             embed["color"]       = 0xFFFFFF
 
             # Inline fields: Keyword Detected | Profile
-            kw_val      = f'"{keyword}"' if keyword else "—"
-            profile_val = f"— {profile_name.upper()} —"
+            kw_val      = f'`"{keyword}"`' if keyword else "—"
+            profile_val = f"` {profile_name.upper()} `"
             embed["fields"] = [
                 {"name": "Keyword Detected", "value": kw_val,      "inline": True},
                 {"name": "Profile",          "value": profile_val, "inline": True},
@@ -761,7 +761,7 @@ class WebhookSender:
             if raw_msg:
                 embed["fields"].append({
                     "name":   "Message Content",
-                    "value":  f"*{raw_msg[:900]}*",
+                    "value":  f"```{raw_msg[:900]}```",
                     "inline": False,
                 })
 
@@ -4886,7 +4886,7 @@ class MainWindow(QMainWindow):
         self._pd.c_snipes.set_value(str(n))
 
         profile_name = data.get("profile", "Unknown")
-        title = f"Snipped — {profile_name}"
+        title = f" — {profile_name}"
         msg   = f"Detected in server. ({n} total)"
         self._tray_notify(title, msg, get_tray_icon_img())
 
