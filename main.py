@@ -788,38 +788,27 @@ class WebhookSender:
         elif event_type == "owner_info":
             if not getattr(self.config, "on_owner_info", True):
                 return
-            author_display = kwargs.get("author_display", "?")
-            author_name    = kwargs.get("author_name", author_display)
-            author_id      = kwargs.get("author_id", "")
-            author_avatar  = kwargs.get("author_avatar", "")
-            roblox_web_url = kwargs.get("roblox_web_url", "")
-            jump_url       = kwargs.get("jump_url", "")
-            profile_name   = kwargs.get("profile_name", "?")
-            ts_unix        = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            username      = kwargs.get("username", "?")
+            display_name  = kwargs.get("display_name", username)
+            user_id       = kwargs.get("user_id", "?")
+            avatar_url    = kwargs.get("avatar_url", "")
+            creation_date = kwargs.get("creation_date", "?")
+            profile_url   = kwargs.get("profile_url", "")
 
-            embed["title"] = "[ Server Link Posted By ]"
+            embed["title"] = "[ Private Server Owner Info ]"
             embed["color"] = 0xFFFFFF
+            if avatar_url:
+                embed["thumbnail"] = {"url": avatar_url}
 
-            # Author's Discord avatar as thumbnail
-            if author_avatar:
-                embed["thumbnail"] = {"url": author_avatar}
-
-            # Display: "DisplayName (@username)" or just "@username"
-            author_tag = f"@{author_name}"
-            display_val = f"{author_display} ({author_tag})" if author_display != author_name else author_tag
-
+            uname_val = f"{display_name} ({username})" if display_name != username else username
             embed["fields"] = [
-                {"name": "Username",  "value": display_val,       "inline": True},
-                {"name": "Discord ID","value": author_id or "?",  "inline": True},
-                {"name": "Profile",   "value": f"<t:{ts_unix}:R>","inline": True},
+                {"name": "Username",      "value": uname_val,    "inline": True},
+                {"name": "User ID",       "value": str(user_id), "inline": True},
+                {"name": "Creation Date", "value": creation_date, "inline": False},
             ]
-            if roblox_web_url and not roblox_web_url.startswith("roblox://"):
+            if profile_url:
                 embed["fields"].append(
-                    {"name": "Server Link", "value": roblox_web_url, "inline": False})
-            if jump_url:
-                embed["fields"].append(
-                    {"name": "Original Message", "value": f"[Jump to message]({jump_url})",
-                     "inline": False})
+                    {"name": "Profile", "value": profile_url, "inline": False})
 
         else:
             return
@@ -1368,45 +1357,199 @@ class Bridge(QObject):
             pass
 
     async def _fetch_and_send_owner_info(self, snipe_data: dict):
-        """Send a 'server sharer' embed with the Discord author who posted the link."""
+        """Fetch private server owner from Roblox API (requires .ROBLOSECURITY cookie)."""
         if not self._cfg.owner_info_enabled:
             return
         if not self._cfg.webhook.enabled or not self._cfg.webhook.url:
             return
 
-        author_display   = snipe_data.get("author_display") or snipe_data.get("author", "?")
-        author_name      = snipe_data.get("author", author_display)
-        author_id        = snipe_data.get("author_id", "")
-        author_avatar    = snipe_data.get("author_avatar_url", "")
-        roblox_web_url   = snipe_data.get("roblox_web_url", "")
-        jump_url         = snipe_data.get("jump_url", "")
-        profile_name     = snipe_data.get("profile", "?")
-        timestamp_iso    = snipe_data.get("timestamp_iso", "")
-
-        if not author_id and not author_name:
-            self._log_owner("[OWNER] No author data available — skipping")
+        cookie = getattr(self._cfg, "roblox_cookie", "").strip()
+        if not cookie:
+            self._log_owner("[OWNER] No Roblox cookie configured — owner lookup disabled")
             return
 
-        self._log_owner(
-            f"[OWNER] Sending server sharer embed for {author_display} ({author_id})")
+        place_id = snipe_data.get("place_id", "")
+        code     = snipe_data.get("code", "")
+
+        if not place_id or not code or place_id == "0":
+            self._log_owner(f"[OWNER] Skipped — no valid place_id/code (place='{place_id}')")
+            return
+
+        self._log_owner(f"[OWNER] Starting lookup: place_id={place_id}, code={code[:14]}…")
+
+        # Auth headers using the Roblox session cookie
+        auth_headers = {
+            "Cookie":     f".ROBLOSECURITY={cookie}",
+            "User-Agent": "Roblox/WinInet",
+        }
 
         try:
             sess = await self._get_webhook_session()
+
+            # ── Step 1: resolve universe ID from place ID ─────────────────
+            universe_id = None
+            try:
+                async with sess.get(
+                    f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    self._log_owner(f"[OWNER] Universe status: {r.status}")
+                    if r.status == 200:
+                        universe_id = (await r.json()).get("universeId")
+                        self._log_owner(f"[OWNER] universe_id={universe_id}")
+                    else:
+                        body = await r.text()
+                        self._log_owner(f"[OWNER] Universe error: {body[:120]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] Universe request failed: {exc}")
+
+            if not universe_id:
+                self._log_owner("[OWNER] No universe_id — aborting")
+                return
+
+            # ── Step 2: get CSRF token (required for authenticated requests) ──
+            csrf_token = ""
+            try:
+                async with sess.post(
+                    "https://auth.roblox.com/v2/logout",
+                    headers=auth_headers,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    csrf_token = r.headers.get("x-csrf-token", "")
+                    self._log_owner(
+                        f"[OWNER] CSRF token: {'obtained' if csrf_token else 'not found'}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] CSRF request failed: {exc}")
+
+            auth_headers_csrf = {**auth_headers, "x-csrf-token": csrf_token}
+
+            # ── Step 3: get private server info → owner ID ────────────────
+            owner_id = None
+            try:
+                async with sess.get(
+                    f"https://games.roblox.com/v1/games/{universe_id}"
+                    f"/private-server-invite?privateServerLinkCode={code}",
+                    headers=auth_headers_csrf,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    self._log_owner(f"[OWNER] private-server-invite status: {r.status}")
+                    if r.status == 200:
+                        data      = await r.json()
+                        self._log_owner(f"[OWNER] invite keys: {list(data.keys())}")
+                        owner_obj = (data.get("owner")
+                                     or (data.get("vipServer") or {}).get("owner")
+                                     or {})
+                        owner_id  = str(owner_obj.get("id") or owner_obj.get("userId") or "").strip()
+                        self._log_owner(f"[OWNER] owner_id: '{owner_id}'")
+                    else:
+                        body = await r.text()
+                        self._log_owner(f"[OWNER] invite error ({r.status}): {body[:120]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] invite request failed: {exc}")
+
+            # Fallback: enumerate own private servers
+            if not owner_id:
+                self._log_owner("[OWNER] Trying fallback private-servers list…")
+                try:
+                    async with sess.get(
+                        f"https://games.roblox.com/v2/universes/{universe_id}"
+                        f"/private-servers?limit=50",
+                        headers=auth_headers_csrf,
+                        timeout=aiohttp.ClientTimeout(total=8),
+                    ) as r:
+                        self._log_owner(f"[OWNER] fallback status: {r.status}")
+                        if r.status == 200:
+                            items = (await r.json()).get("data", [])
+                            self._log_owner(f"[OWNER] fallback returned {len(items)} items")
+                            for item in items:
+                                if str(item.get("privateServerLinkCode", "")) == code:
+                                    owner_id = str((item.get("owner") or {}).get("id", "")).strip()
+                                    self._log_owner(f"[OWNER] matched → owner_id={owner_id}")
+                                    break
+                        else:
+                            body = await r.text()
+                            self._log_owner(f"[OWNER] fallback error: {body[:120]}")
+                except Exception as exc:
+                    self._log_owner(f"[OWNER] fallback failed: {exc}")
+
+            if not owner_id:
+                self._log_owner("[OWNER] owner_id empty after all attempts — aborting")
+                return
+
+            # ── Step 4: get Roblox user profile ──────────────────────────
+            username     = owner_id
+            display_name = owner_id
+            created_iso  = ""
+            try:
+                async with sess.get(
+                    f"https://users.roblox.com/v1/users/{owner_id}",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    self._log_owner(f"[OWNER] user profile status: {r.status}")
+                    if r.status == 200:
+                        u = await r.json()
+                        username     = u.get("name", owner_id)
+                        display_name = u.get("displayName", username)
+                        created_iso  = u.get("created", "")
+                        self._log_owner(
+                            f"[OWNER] user={username}, display={display_name}, "
+                            f"created={created_iso[:10]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] user profile failed: {exc}")
+
+            # ── Step 5: get avatar headshot ───────────────────────────────
+            avatar_url = ""
+            try:
+                async with sess.get(
+                    f"https://thumbnails.roblox.com/v1/users/avatar-headshot"
+                    f"?userIds={owner_id}&size=150x150&format=Png&isCircular=false",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    if r.status == 200:
+                        imgs       = (await r.json()).get("data") or []
+                        avatar_url = imgs[0].get("imageUrl", "") if imgs else ""
+                        self._log_owner(f"[OWNER] avatar: {'found' if avatar_url else 'empty'}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] avatar failed: {exc}")
+
+            # ── Step 6: format creation date ─────────────────────────────
+            creation_date = "Unknown"
+            if created_iso:
+                try:
+                    import datetime as _dt
+                    created_dt = _dt.datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+                    now_dt     = _dt.datetime.now(_dt.timezone.utc)
+                    delta      = now_dt - created_dt
+                    years      = delta.days // 365
+                    months     = (delta.days % 365) // 30
+                    days_rem   = delta.days % 30
+                    if years >= 1:
+                        creation_date = f"{years} year{'s' if years != 1 else ''} ago"
+                    elif months >= 1:
+                        creation_date = f"{months} month{'s' if months != 1 else ''} ago"
+                    else:
+                        creation_date = f"{max(1, days_rem)} day{'s' if days_rem != 1 else ''} ago"
+                    self._log_owner(f"[OWNER] creation_date='{creation_date}'")
+                except Exception as exc:
+                    creation_date = created_iso[:10] if created_iso else "Unknown"
+                    self._log_owner(f"[OWNER] date format error: {exc}")
+
+            # ── Step 7: send webhook embed ────────────────────────────────
+            self._log_owner(
+                f"[OWNER] Sending embed — {username} ({owner_id}), created {creation_date}")
             sender = WebhookSender(sess, self._cfg.webhook)
             await sender.send(
                 "owner_info",
-                author_display=author_display,
-                author_name=author_name,
-                author_id=author_id,
-                author_avatar=author_avatar,
-                roblox_web_url=roblox_web_url,
-                jump_url=jump_url,
-                profile_name=profile_name,
-                timestamp_iso=timestamp_iso,
+                username=username,
+                display_name=display_name,
+                user_id=owner_id,
+                avatar_url=avatar_url,
+                creation_date=creation_date,
+                profile_url=f"https://www.roblox.com/users/{owner_id}/profile",
             )
-            self._log_owner("[OWNER] Server sharer embed sent successfully")
+            self._log_owner("[OWNER] Webhook sent successfully")
         except Exception as exc:
-            self._log_owner(f"[OWNER] Failed to send embed: {exc}")
+            self._log_owner(f"[OWNER] Unhandled exception: {exc}")
 
     def _log_owner(self, message: str):
         """Log owner lookup messages — always visible in Logs (not dev_only) for easy debugging."""
@@ -3804,18 +3947,59 @@ class NotificationsPage(QWidget):
         return c
 
     def _sec_owner_info(self) -> QFrame:
-        c, lay = self._card("Server Link Sharer Info")
+        c, lay = self._card("Private Server Owner Info")
         lay.addWidget(lbl(
-            "When a snipe fires, sends a second embed with the info of the Discord user\n"
-            "who posted the private server link — username, ID, avatar, and a jump link\n"
-            "to the original message.",
+            "When a snipe fires, look up the Roblox account that owns the private server\n"
+            "and send a summary embed to your webhook.",
             "FieldHint"))
 
-        self._chk_owner = QCheckBox("Enable server link sharer embed")
+        self._chk_owner = QCheckBox("Enable private server owner lookup")
         self._chk_owner.setChecked(getattr(self._cfg, "owner_info_enabled", False))
         self._chk_owner.toggled.connect(self._save_owner_cfg)
         lay.addWidget(self._chk_owner)
+
+        lay.addWidget(hdiv())
+
+        cookie_hdr = QHBoxLayout()
+        cookie_hdr.addWidget(lbl("Roblox Cookie (.ROBLOSECURITY)", "FieldLbl"))
+        cookie_hdr.addWidget(HelpIcon(
+            "Required for owner lookup — the Roblox private server API is not public.\n\n"
+            "How to get your cookie:\n"
+            "1. Open Roblox in your browser and log in\n"
+            "2. Press F12 → Application → Cookies → .roblox.com\n"
+            "3. Find .ROBLOSECURITY and copy its Value\n\n"
+            "This is stored locally and only used to query the Roblox API.\n"
+            "Never share this with anyone — it gives full access to your Roblox account."))
+        cookie_hdr.addStretch()
+        lay.addLayout(cookie_hdr)
+
+        self._roblox_cookie = QLineEdit(getattr(self._cfg, "roblox_cookie", ""))
+        self._roblox_cookie.setPlaceholderText(
+            "Paste .ROBLOSECURITY value here (optional)…")
+        self._roblox_cookie.setEchoMode(QLineEdit.EchoMode.Password)
+        self._roblox_cookie.textChanged.connect(self._save_owner_cfg)
+
+        show_ck = QCheckBox("Show")
+        show_ck.toggled.connect(lambda v: self._roblox_cookie.setEchoMode(
+            QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
+
+        ck_row = QHBoxLayout()
+        ck_row.addWidget(self._roblox_cookie)
+        ck_row.addWidget(show_ck)
+        lay.addLayout(ck_row)
+
+        lay.addWidget(lbl(
+            "Without a cookie, owner lookup will not work (Roblox API requires auth).\n"
+            "Sends a separate embed after each snipe with the owner's username, ID,\n"
+            "account creation date, and profile link.",
+            "FieldHint"))
         return c
+
+    def _save_owner_cfg(self):
+        self._cfg.owner_info_enabled = self._chk_owner.isChecked()
+        self._cfg.roblox_cookie      = self._roblox_cookie.text().strip()
+        self._cfg.save()
+        self.config_changed.emit()
 
     def _save_owner_cfg(self):
         self._cfg.owner_info_enabled = self._chk_owner.isChecked()
