@@ -1682,22 +1682,95 @@ class ToggleSwitch(QWidget):
 
 
 class PropagatingListWidget(QListWidget):
+    """List widget that passes wheel events to the parent scroll area when it has nothing to scroll."""
     def wheelEvent(self, e):
         bar   = self.verticalScrollBar()
         delta = e.angleDelta().y()
         at_top    = bar.value() == bar.minimum()
         at_bottom = bar.value() == bar.maximum()
-        if bar.minimum() == bar.maximum() or (delta > 0 and at_top) or (delta < 0 and at_bottom):
+        empty     = bar.minimum() == bar.maximum()
+
+        can_scroll_up   = not at_top  and delta > 0
+        can_scroll_down = not at_bottom and delta < 0
+
+        if empty or (not can_scroll_up and not can_scroll_down):
+            # Nothing to scroll here — let the parent SmoothScrollArea handle it
             e.ignore()
         else:
             super().wheelEvent(e)
 
 
 class SmoothScrollArea(QScrollArea):
+    """
+    Scroll area with momentum-based smooth scrolling.
+    - Only handles wheel events when the scrollbar has room to move
+    - Doesn't steal events when a nested scrollable widget (list, text) is under the cursor
+    - Uses a velocity/friction model instead of teleporting jumps
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._velocity   = 0.0
+        self._target     = 0.0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(12)   # ~83 fps
+        self._anim_timer.timeout.connect(self._tick)
+
+    def _tick(self):
+        bar  = self.verticalScrollBar()
+        diff = self._target - bar.value()
+        if abs(diff) < 0.5:
+            bar.setValue(int(self._target))
+            self._anim_timer.stop()
+            return
+        # Exponential ease — 22% of remaining distance per frame
+        bar.setValue(int(bar.value() + diff * 0.22))
+
     def wheelEvent(self, e):
         bar = self.verticalScrollBar()
-        bar.setValue(bar.value() - int(e.angleDelta().y() / 120 * 30))
+        # If there's nothing to scroll, pass the event up
+        if bar.minimum() == bar.maximum():
+            e.ignore()
+            return
+
+        # Don't steal if cursor is over a nested widget that can scroll
+        child = self.widget()
+        if child:
+            pos = child.mapFrom(self, e.position().toPoint())
+            under = child.childAt(pos)
+            if under and self._child_can_scroll(under, e.angleDelta().y()):
+                e.ignore()
+                return
+
+        steps = e.angleDelta().y() / 120.0
+        step  = max(60, bar.singleStep() * 4)   # pixels per notch
+        self._target = max(bar.minimum(),
+                           min(bar.maximum(), self._target - steps * step))
+        if not self._anim_timer.isActive():
+            self._anim_timer.start()
         e.accept()
+
+    @staticmethod
+    def _child_can_scroll(widget, delta_y: int) -> bool:
+        """Return True if widget is a scrollable that can actually scroll in the given direction."""
+        from PySide6.QtWidgets import QAbstractScrollArea, QAbstractItemView
+        # Walk up to find the nearest scrollable ancestor (but stop at our own boundary)
+        w = widget
+        for _ in range(6):
+            if w is None:
+                break
+            if isinstance(w, (QAbstractScrollArea, QAbstractItemView)):
+                sb = w.verticalScrollBar() if hasattr(w, 'verticalScrollBar') else None
+                if sb and sb.minimum() != sb.maximum():
+                    going_up = delta_y > 0
+                    at_top   = sb.value() == sb.minimum()
+                    at_bot   = sb.value() == sb.maximum()
+                    # The child CAN handle this scroll if it has room in that direction
+                    if going_up and not at_top:
+                        return True
+                    if not going_up and not at_bot:
+                        return True
+            w = w.parent()
+        return False
 
 
 class EdgeCursorFilter(QObject):
@@ -3998,11 +4071,6 @@ class NotificationsPage(QWidget):
     def _save_owner_cfg(self):
         self._cfg.owner_info_enabled = self._chk_owner.isChecked()
         self._cfg.roblox_cookie      = self._roblox_cookie.text().strip()
-        self._cfg.save()
-        self.config_changed.emit()
-
-    def _save_owner_cfg(self):
-        self._cfg.owner_info_enabled = self._chk_owner.isChecked()
         self._cfg.save()
         self.config_changed.emit()
 
