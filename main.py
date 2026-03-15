@@ -205,11 +205,6 @@ LOGO_PATH = Path(resource_path("logo.png"))
 ICO_PATH  = Path(resource_path("app.ico"))
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# INLINE MODULES  (blacklist · cooldown · plugin_loader · assets)
-# Previously separate files — merged here so the project is 2-file only.
-# ═════════════════════════════════════════════════════════════════════════════
-
 # ── Blacklist ─────────────────────────────────────────────────────────────────
 
 REASON_DELETED_LINK = "message_deleted"
