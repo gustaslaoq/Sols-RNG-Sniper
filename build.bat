@@ -168,13 +168,13 @@ if "%UPDATE_MODE%"=="1" (
     )
     :launch_anyway
     echo  Old process exited ^(waited !WAITED!s^). Launching new version...
-    timeout /t 2 /nobreak >nul
+    timeout /t 3 /nobreak >nul
     echo.
     echo  ==========================================
     echo   Update complete! Starting new version...
     echo  ==========================================
     echo.
-    start "" "%TARGET_EXE%"
+    powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep 1; Start-Process '%TARGET_EXE%'"
     exit /b 0
 )
 
