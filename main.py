@@ -1776,10 +1776,14 @@ def _launch_bat_update() -> bool:
     else:
         target = str(_get_exe_dir() / f"{EXE_NAME}.exe")
     try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags    = subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 1  # SW_NORMAL — visible, not minimized
         subprocess.Popen(
             ["cmd.exe", "/c", str(bat), "--update", target],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             cwd=str(_get_exe_dir()),
+            startupinfo=si,
         )
         return True
     except Exception as exc:
