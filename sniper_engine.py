@@ -1216,7 +1216,6 @@ class SniperEngine:
     async def _on_discord_message(self, guild_id: str, channel_id: str,
                                   msg_id: str, content: str, author: str, full: str):
         if self._paused:
-            self._log(LogLevel.DEBUG, f"[MSG] Skipped — engine is paused", dev_only=True)
             return
 
         self.metrics["messages_scanned"] += 1
