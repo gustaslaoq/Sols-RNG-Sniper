@@ -155,11 +155,25 @@ echo.
 
 if "%UPDATE_MODE%"=="1" (
     echo.
+    echo  Waiting for old process to fully exit...
+    set MAX_WAIT=30
+    set WAITED=0
+    :wait_exit
+    tasklist /FI "IMAGENAME eq %EXE_NAME%.exe" 2>nul | find /I "%EXE_NAME%.exe" >nul 2>&1
+    if not errorlevel 1 (
+        set /a WAITED+=1
+        if !WAITED! geq !MAX_WAIT! goto launch_anyway
+        timeout /t 1 /nobreak >nul
+        goto wait_exit
+    )
+    :launch_anyway
+    echo  Old process exited ^(waited !WAITED!s^). Launching new version...
+    timeout /t 2 /nobreak >nul
+    echo.
     echo  ==========================================
     echo   Update complete! Starting new version...
     echo  ==========================================
     echo.
-    timeout /t 5 /nobreak >nul
     start "" "%TARGET_EXE%"
     exit /b 0
 )
