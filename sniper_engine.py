@@ -287,6 +287,7 @@ class SniperConfig:
     auto_join_delay_ms:      int           = 0
     pause_after_snipe_s:     int           = 0       # 0 = disabled
     close_roblox_after_join: bool          = False
+    biome_leave_action:      str           = "none"  # "none" | "kill" | "home"
     anti_bait_enabled:       bool          = True
     link_resolve_enabled:    bool          = True
     log_tail_bytes:          int           = LOG_TAIL_BYTES
@@ -324,6 +325,7 @@ class SniperConfig:
             "auto_join_delay_ms":      self.auto_join_delay_ms,
             "pause_after_snipe_s":     self.pause_after_snipe_s,
             "close_roblox_after_join": self.close_roblox_after_join,
+            "biome_leave_action":      self.biome_leave_action,
             "anti_bait_enabled":       self.anti_bait_enabled,
             "link_resolve_enabled":    self.link_resolve_enabled,
             "log_tail_bytes":          self.log_tail_bytes,
@@ -1338,7 +1340,6 @@ class SniperEngine:
                 self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
-        """Wait for Roblox to load and verify the active biome against the profile."""
         loop  = asyncio.get_event_loop()
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(30.0))
@@ -1354,6 +1355,9 @@ class SniperEngine:
         if matched:
             self._log(LogLevel.SUCCESS,
                 f"[ANTI-BAIT] Biome verified ✓  ({detected})")
+            action = self.config.biome_leave_action
+            if action != "none":
+                asyncio.create_task(self._biome_watcher(expected, action))
         else:
             self._log(LogLevel.WARN,
                 f"[ANTI-BAIT] Wrong biome — expected '{expected}', got '{detected}'")
@@ -1365,3 +1369,61 @@ class SniperEngine:
             self.on_biome(expected, detected, matched)
         except Exception:
             pass
+
+    async def _biome_watcher(self, expected_biome: str, action: str):
+        self._log(LogLevel.INFO,
+            f"[BIOME WATCHER] Monitoring for biome change from '{expected_biome}'…")
+        loop     = asyncio.get_event_loop()
+        interval = 3.0
+        stable_count   = 0
+        required_stable = 2
+
+        while self._running:
+            await asyncio.sleep(interval)
+
+            if not ProcessManager.is_roblox_running():
+                self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox closed — watcher stopped.")
+                return
+
+            try:
+                current = await loop.run_in_executor(
+                    None, self._log_reader.get_current_biome)
+            except Exception:
+                continue
+
+            if current is None:
+                continue
+
+            current_upper = current.upper()
+            if current_upper != expected_biome:
+                stable_count += 1
+                self._log(LogLevel.DEBUG,
+                    f"[BIOME WATCHER] Biome changed: '{expected_biome}' → '{current_upper}' "
+                    f"({stable_count}/{required_stable})", dev_only=True)
+                if stable_count >= required_stable:
+                    self._log(LogLevel.INFO,
+                        f"[BIOME WATCHER] Biome left '{expected_biome}' (now '{current_upper}') "
+                        f"— executing action: {action}")
+                    await loop.run_in_executor(None, lambda: self._execute_biome_leave(action))
+                    return
+            else:
+                stable_count = 0
+
+    def _execute_biome_leave(self, action: str):
+        if action == "kill":
+            self._log(LogLevel.INFO, "[BIOME WATCHER] Closing Roblox…")
+            ProcessManager.kill_roblox()
+        elif action == "home":
+            self._log(LogLevel.INFO,
+                "[BIOME WATCHER] Returning Roblox to home page — ready for next snipe…")
+            ProcessManager.kill_roblox_and_wait(timeout=5.0)
+            time.sleep(0.5)
+            try:
+                if platform.system() == "Windows":
+                    os.startfile("roblox://")
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", "roblox://"])
+                else:
+                    subprocess.Popen(["xdg-open", "roblox://"])
+            except Exception as exc:
+                self._log(LogLevel.ERROR, f"[BIOME WATCHER] Failed to relaunch Roblox: {exc}")
