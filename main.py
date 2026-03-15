@@ -727,59 +727,45 @@ class WebhookSender:
                 return
             profile_name     = kwargs.get("profile", "Unknown")
             author_display   = kwargs.get("author_display") or kwargs.get("author", "Unknown")
-            author_name      = kwargs.get("author", "Unknown")
-            author_id        = kwargs.get("author_id", "")
+            author_name      = kwargs.get("author", author_display)
             author_avatar    = kwargs.get("author_avatar_url", "")
             raw_msg          = kwargs.get("raw_message", "")
             roblox_web_url   = kwargs.get("roblox_web_url", kwargs.get("link", ""))
             jump_url         = kwargs.get("jump_url", "")
             keyword          = kwargs.get("keyword", "")
-            ts_ago_unix      = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            ts_unix          = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
-            # author as thumbnail
-            if author_avatar:
-                embed["thumbnail"] = {"url": author_avatar}
-
-            # author display in title row via author field
-            author_tag = f"@{author_name}" if author_name and author_name != author_display else f"@{author_display}"
+            # ── author section: avatar icon + "displayName (@username)" ──
+            # (this is the top "header" of the Discord embed, not a body field)
+            author_tag = f"@{author_name}" if author_name != author_display else f"@{author_display}"
             embed["author"] = {
                 "name":     f"{author_display} ({author_tag})",
-                "icon_url": author_avatar or self.logo_url,
+                "icon_url": author_avatar if author_avatar else self.logo_url,
             }
+            # No title, no thumbnail
 
-            embed["description"] = (
-                f"**Sniped** — {profile_name}  (<t:{ts_ago_unix}:R>)"
-            )
+            # ── description ───────────────────────────────────────────────
+            desc_lines = [f"> # Snipped - {profile_name} (<t:{ts_unix}:R>)"]
+            desc_lines.append("")   # blank line spacer
+
+            if jump_url:
+                desc_lines.append(f"[jump to message]({jump_url})")
+
             if keyword:
-                embed["fields"] = [
-                    {"name": "Keyword Detected", "value": f"`{keyword}`", "inline": True},
-                    {"name": "Profile",           "value": f"`{profile_name}`", "inline": True},
-                ]
-            else:
-                embed["fields"] = [
-                    {"name": "Profile", "value": f"`{profile_name}`", "inline": True},
-                ]
+                desc_lines.append(f"Keyword Detected: `{keyword}`")
 
             if raw_msg:
-                embed["fields"].append(
-                    {"name": "Raw Message", "value": f"```\n{raw_msg[:900]}\n```",
-                     "inline": False})
+                desc_lines.append(f"```\n{raw_msg[:900]}\n```")
 
-            embed["color"] = 0xFFFFFF
+            embed["description"] = "\n".join(desc_lines)
+            embed["color"]       = 0xFFFFFF
 
-            # Build components: jump link row on top, then web URL button
-            buttons = []
-            if jump_url:
-                buttons.append({
-                    "type": 2, "label": "Jump to Message", "style": 5, "url": jump_url,
-                })
-            if roblox_web_url:
-                buttons.append({
+            # ── action button: Open in Roblox (web URL, not roblox:// scheme) ──
+            if roblox_web_url and not roblox_web_url.startswith("roblox://"):
+                components = [{"type": 1, "components": [{
                     "type": 2, "label": "Open in Roblox", "style": 5,
                     "url": roblox_web_url,
-                })
-            if buttons:
-                components = [{"type": 1, "components": buttons}]
+                }]}]
 
         elif event_type == "biome":
             if not self.config.on_biome:
@@ -1336,6 +1322,14 @@ class Bridge(QObject):
             self._webhook_session = aiohttp.ClientSession()
         return self._webhook_session
 
+    async def _send_lifecycle_webhook(self, event_type: str):
+        try:
+            sess   = await self._get_webhook_session()
+            sender = WebhookSender(sess, self._cfg.webhook)
+            await sender.send(event_type)
+        except Exception:
+            pass
+
     async def _send_snipe_webhook(self, data: dict):
         try:
             sess   = await self._get_webhook_session()
@@ -1387,6 +1381,7 @@ class Bridge(QObject):
                 daemon=True, name="EngineJoin").start()
 
     def reload(self, cfg: SniperConfig):
+        self._cfg = cfg   # keep local ref in sync so webhook sends use the new config
         self.engine.reload_config(cfg)
 
     def pause(self):
@@ -3173,7 +3168,7 @@ class SettingsPage(QWidget):
             "messages but does not change the displayed connection status.",
             "FieldHint"))
         lay.addWidget(lbl(
-            "",
+            "⚠  Using self-bot tokens may violate Discord ToS. Use at your own risk.",
             "FieldHint"))
 
         input_row = QHBoxLayout(); input_row.setSpacing(8)
@@ -3336,9 +3331,12 @@ class SettingsPage(QWidget):
             self._refresh_ch(); self._schedule_save()
 
     def _refresh_ch(self):
-        # Remove all managed widgets from the container
-        for w in self._ch_rows:
-            self._ch_vlay.removeWidget(w); w.deleteLater()
+        # Clear the entire layout (removes both tracked widgets and stretch spacers)
+        while self._ch_vlay.count():
+            item = self._ch_vlay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
         self._ch_rows.clear()
 
         channels = self._cfg.monitored_channels
@@ -4068,8 +4066,19 @@ class SnipeHistoryPage(QWidget):
         self._list_lay.addStretch()
 
     def add_entry(self, snipe_data: dict):
-        """Called in real-time when a new snipe fires."""
-        if self._history:
+        """Called in real-time when a new snipe fires.
+        Only rebuilds if the page is currently visible to avoid unnecessary work."""
+        if not self._history:
+            return
+        if self.isVisible():
+            self._rebuild_list(self._history.all_entries())
+        else:
+            self._dirty = True   # rebuild lazily on next showEvent
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_dirty", False) and self._history:
+            self._dirty = False
             self._rebuild_list(self._history.all_entries())
 
     def refresh(self):
@@ -4470,6 +4479,11 @@ class MainWindow(QMainWindow):
 
     def _send_webhook(self, event_type: str, **kwargs):
         if not self._cfg.webhook.enabled or not self._cfg.webhook.url:
+            return
+        # Prefer Bridge's running loop to avoid spinning up extra threads
+        if self._br and self._br._loop and self._br._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._br._send_lifecycle_webhook(event_type), self._br._loop)
             return
 
         async def _send():
