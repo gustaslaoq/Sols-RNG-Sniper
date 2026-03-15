@@ -466,6 +466,8 @@ class PluginLoader:
             if rec:
                 if rec.name in saved_states:
                     rec.enabled = saved_states[rec.name]
+                elif py_file.stem == "example_plugin":
+                    rec.enabled = False
                 self._plugins.append(rec); loaded += 1
         return loaded
 
@@ -1904,9 +1906,9 @@ class TitleBar(QFrame):
 _PAGES = [
     ("home",     "Home"),
     ("settings", "Settings"),
-    ("logs",     "Logs"),
     ("bell",     "Notifications"),
     ("lock",     "Blacklist"),
+    ("logs",     "Logs"),
     ("zap",      "Plugins"),
 ]
 
@@ -2006,6 +2008,10 @@ class Sidebar(QFrame):
 
         self._btns[0].set_active(True)
         self._active_idx = 0
+
+    def set_plugins_visible(self, visible: bool):
+        if len(self._btns) > 5:
+            self._btns[5].setVisible(visible)
 
     def _on_anim_finished(self):
         self._move_indicator_to(self._active_idx)
@@ -3757,15 +3763,18 @@ class MainWindow(QMainWindow):
         self._init_plugin_loader()
 
     def _init_plugin_loader(self):
-        """Create the PluginLoader at startup so the Plugins page works immediately."""
         if getattr(sys, "frozen", False):
             _base = Path(os.path.dirname(sys.executable))
         else:
             _base = Path(os.path.dirname(os.path.abspath(__file__)))
-        pl = PluginLoader(_base / "plugins")
+        plugins_dir = _base / "plugins"
+        pl = PluginLoader(plugins_dir)
         pl.discover()
         self._startup_plugin_loader = pl
         self._ppg.set_loader(pl)
+        plugins_exist = plugins_dir.exists() and any(
+            f for f in plugins_dir.glob("*.py") if not f.name.startswith("_"))
+        self._sb.set_plugins_visible(plugins_exist)
 
     def _setup(self):
         self.setWindowTitle(APP_NAME)
@@ -3800,12 +3809,12 @@ class MainWindow(QMainWindow):
 
         self._pd  = DashboardPage()
         self._pse = SettingsPage(self._cfg, self._dev)
-        self._pl  = LogsPage(self._dev)
         self._pn  = NotificationsPage(self._cfg)
-        self._pbl = BlacklistPage()     # Blacklist page
-        self._ppg = PluginsPage()       # Plugins page
+        self._pbl = BlacklistPage()
+        self._pl  = LogsPage(self._dev)
+        self._ppg = PluginsPage()
 
-        for pg in (self._pd, self._pse, self._pl, self._pn, self._pbl, self._ppg):
+        for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._ppg):
             self._stk.addWidget(pg)
 
         body.addWidget(self._stk); v.addLayout(body)
@@ -3839,9 +3848,7 @@ class MainWindow(QMainWindow):
         sc.activated.connect(self._toggle_dev)
 
     def _on_page_changed(self, idx: int):
-        """Lazy-refresh data pages when user navigates to them."""
-        # idx 4 = Blacklist, idx 5 = Plugins
-        if idx == 4:
+        if idx == 3:
             self._pbl.refresh()
         elif idx == 5:
             self._ppg.refresh()
@@ -3968,6 +3975,7 @@ class MainWindow(QMainWindow):
             self._tb.badge.set_state("idle")
             self._pd.badge.set_state("idle")
             self._pd.c_status.set_value("AUTO-PAUSED")
+            self._pd.on_pause()
             e = LogEntry(LogLevel.WARN, "[ENGINE] Auto-paused after snipe.")
             self._pl.append(e); self._pd.append(e, self._dev)
         else:
@@ -3975,6 +3983,7 @@ class MainWindow(QMainWindow):
                 self._tb.badge.set_state("on")
                 self._pd.badge.set_state("on")
                 self._pd.c_status.set_value("ON")
+                self._pd.on_resume()
             e = LogEntry(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
             self._pl.append(e); self._pd.append(e, self._dev)
 
