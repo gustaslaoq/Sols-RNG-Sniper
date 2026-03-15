@@ -1369,7 +1369,10 @@ class Bridge(QObject):
         code     = snipe_data.get("code", "")
 
         if not place_id or not code or place_id == "0":
+            self._log_owner(f"[OWNER] Skipped — no valid place_id/code (place='{place_id}')")
             return
+
+        self._log_owner(f"[OWNER] Starting lookup: place_id={place_id}, code={code[:14]}…")
 
         try:
             sess = await self._get_webhook_session()
@@ -1381,48 +1384,70 @@ class Bridge(QObject):
                     f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
                     timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
+                    self._log_owner(f"[OWNER] Universe endpoint status: {r.status}")
                     if r.status == 200:
                         universe_id = (await r.json()).get("universeId")
-            except Exception:
-                pass
+                        self._log_owner(f"[OWNER] universe_id={universe_id}")
+                    else:
+                        body = await r.text()
+                        self._log_owner(f"[OWNER] Universe error: {body[:120]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] Universe request failed: {exc}")
 
             if not universe_id:
+                self._log_owner("[OWNER] No universe_id resolved — aborting")
                 return
 
-            # ── Step 2: get private server owner via Games API ────────────
-            # Roblox exposes the VIP server owner through the following endpoint.
+            # ── Step 2: validate private server link → owner ID ───────────
+            # Primary: private-server-invite endpoint (public, no auth required)
             owner_id = None
             try:
                 async with sess.get(
-                    f"https://games.roblox.com/v1/games/{universe_id}/private-servers/access"
-                    f"?privateServerLinkCode={code}",
+                    f"https://games.roblox.com/v1/games/{universe_id}"
+                    f"/private-server-invite?privateServerLinkCode={code}",
                     timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
+                    self._log_owner(f"[OWNER] private-server-invite status: {r.status}")
                     if r.status == 200:
                         data      = await r.json()
-                        owner_obj = data.get("owner") or {}
-                        owner_id  = str(owner_obj.get("id") or "").strip()
-            except Exception:
-                pass
+                        self._log_owner(f"[OWNER] invite keys: {list(data.keys())}")
+                        owner_obj = (data.get("owner")
+                                     or (data.get("vipServer") or {}).get("owner")
+                                     or {})
+                        owner_id  = str(owner_obj.get("id") or owner_obj.get("userId") or "").strip()
+                        self._log_owner(f"[OWNER] owner_id from invite: '{owner_id}'")
+                    else:
+                        body = await r.text()
+                        self._log_owner(f"[OWNER] invite error: {body[:120]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] invite request failed: {exc}")
 
-            # Fallback: try v2 private-servers route
+            # Fallback: enumerate listed private servers and match by link code
             if not owner_id:
+                self._log_owner("[OWNER] Trying fallback v2/universes endpoint…")
                 try:
                     async with sess.get(
                         f"https://games.roblox.com/v2/universes/{universe_id}"
-                        f"/private-servers?limit=10",
+                        f"/private-servers?limit=25",
                         timeout=aiohttp.ClientTimeout(total=8),
                     ) as r:
+                        self._log_owner(f"[OWNER] fallback status: {r.status}")
                         if r.status == 200:
                             items = (await r.json()).get("data", [])
+                            self._log_owner(f"[OWNER] fallback returned {len(items)} items")
                             for item in items:
                                 if str(item.get("privateServerLinkCode", "")) == code:
-                                    owner_id = str((item.get("owner") or {}).get("id", ""))
+                                    owner_id = str((item.get("owner") or {}).get("id", "")).strip()
+                                    self._log_owner(f"[OWNER] matched in fallback → owner_id={owner_id}")
                                     break
-                except Exception:
-                    pass
+                        else:
+                            body = await r.text()
+                            self._log_owner(f"[OWNER] fallback error: {body[:120]}")
+                except Exception as exc:
+                    self._log_owner(f"[OWNER] fallback request failed: {exc}")
 
             if not owner_id:
+                self._log_owner("[OWNER] owner_id still empty after all attempts — aborting")
                 return
 
             # ── Step 3: get Roblox user profile ──────────────────────────
@@ -1434,13 +1459,17 @@ class Bridge(QObject):
                     f"https://users.roblox.com/v1/users/{owner_id}",
                     timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
+                    self._log_owner(f"[OWNER] user profile status: {r.status}")
                     if r.status == 200:
                         u = await r.json()
                         username     = u.get("name", owner_id)
                         display_name = u.get("displayName", username)
                         created_iso  = u.get("created", "")
-            except Exception:
-                pass
+                        self._log_owner(
+                            f"[OWNER] user={username}, display={display_name}, "
+                            f"created={created_iso[:10]}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] user profile request failed: {exc}")
 
             # ── Step 4: get avatar headshot ───────────────────────────────
             avatar_url = ""
@@ -1450,35 +1479,39 @@ class Bridge(QObject):
                     f"?userIds={owner_id}&size=150x150&format=Png&isCircular=false",
                     timeout=aiohttp.ClientTimeout(total=8),
                 ) as r:
+                    self._log_owner(f"[OWNER] avatar status: {r.status}")
                     if r.status == 200:
-                        imgs = (await r.json()).get("data") or []
+                        imgs       = (await r.json()).get("data") or []
                         avatar_url = imgs[0].get("imageUrl", "") if imgs else ""
-            except Exception:
-                pass
+                        self._log_owner(f"[OWNER] avatar_url: {'found' if avatar_url else 'empty'}")
+            except Exception as exc:
+                self._log_owner(f"[OWNER] avatar request failed: {exc}")
 
             # ── Step 5: format creation date ─────────────────────────────
             creation_date = "Unknown"
             if created_iso:
                 try:
                     import datetime as _dt
-                    created_dt = _dt.datetime.fromisoformat(
-                        created_iso.replace("Z", "+00:00"))
-                    now_dt = _dt.datetime.now(_dt.timezone.utc)
-                    delta  = now_dt - created_dt
-                    years  = delta.days // 365
-                    months = (delta.days % 365) // 30
-                    days   = delta.days % 30
-                    # Friendly string: "6 years ago", "3 months ago", "12 days ago"
+                    created_dt = _dt.datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+                    now_dt     = _dt.datetime.now(_dt.timezone.utc)
+                    delta      = now_dt - created_dt
+                    years      = delta.days // 365
+                    months     = (delta.days % 365) // 30
+                    days_rem   = delta.days % 30
                     if years >= 1:
                         creation_date = f"{years} year{'s' if years != 1 else ''} ago"
                     elif months >= 1:
                         creation_date = f"{months} month{'s' if months != 1 else ''} ago"
                     else:
-                        creation_date = f"{max(1, days)} day{'s' if days != 1 else ''} ago"
-                except Exception:
+                        creation_date = f"{max(1, days_rem)} day{'s' if days_rem != 1 else ''} ago"
+                    self._log_owner(f"[OWNER] creation_date='{creation_date}'")
+                except Exception as exc:
                     creation_date = created_iso[:10] if created_iso else "Unknown"
+                    self._log_owner(f"[OWNER] date format error: {exc}")
 
-            # ── Step 6: send webhook embed ────────────────────────────────
+            # ── Step 6: send webhook ──────────────────────────────────────
+            self._log_owner(
+                f"[OWNER] Sending embed for {username} ({owner_id}), created {creation_date}")
             sender = WebhookSender(sess, self._cfg.webhook)
             await sender.send(
                 "owner_info",
@@ -1489,6 +1522,14 @@ class Bridge(QObject):
                 creation_date=creation_date,
                 profile_url=f"https://www.roblox.com/users/{owner_id}/profile",
             )
+            self._log_owner("[OWNER] Webhook sent successfully")
+        except Exception as exc:
+            self._log_owner(f"[OWNER] Unhandled exception: {exc}")
+
+    def _log_owner(self, message: str):
+        """Log owner lookup messages — always visible in Logs (not dev_only) for easy debugging."""
+        try:
+            self.engine.on_log(LogEntry(LogLevel.INFO, message))
         except Exception:
             pass
 
