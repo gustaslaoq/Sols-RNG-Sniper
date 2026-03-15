@@ -2,7 +2,6 @@
 setlocal EnableDelayedExpansion
 
 set "REPO_URL=https://github.com/gustaslaoq/Sols-RNG-Sniper.git"
-set "REPO_API=https://api.github.com/repos/gustaslaoq/Sols-RNG-Sniper/commits/main"
 set "EXE_NAME=SlaoqSniper"
 set "LOGO_URL=https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png"
 set "COMMIT_SHA=unknown"
@@ -22,51 +21,21 @@ echo.
 echo  ==========================================
 echo   Slaoq's Sniper - Build Pipeline
 echo  ==========================================
-echo  Mode   : %UPDATE_MODE% (1=auto-update, 0=manual)
 echo  Output : %TARGET_EXE%
 echo  ==========================================
 echo.
 
-if "%UPDATE_MODE%"=="0" (
-    echo [PRE] Checking if already up to date...
-    set "REMOTE_SHA="
-    set "LOCAL_SHA=none"
-
-    for /f "usebackq delims=" %%s in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { (Invoke-WebRequest -Uri '%REPO_API%' -UseBasicParsing | ConvertFrom-Json).sha.Substring(0,7) } catch { '' }" 2^>nul`) do set "REMOTE_SHA=%%s"
-
-    if exist "%SCRIPT_DIR%version.txt" (
-        set /p LOCAL_SHA=<"%SCRIPT_DIR%version.txt"
-    )
-
-    if not "!REMOTE_SHA!"=="" (
-        if /i "!LOCAL_SHA!"=="!REMOTE_SHA!" (
-            echo  Already up to date (!REMOTE_SHA!). Launching app...
-            echo.
-            if exist "%TARGET_EXE%" (
-                start "" "%TARGET_EXE%"
-                exit /b 0
-            ) else (
-                echo  WARNING: Exe not found, proceeding with build...
-            )
-        ) else (
-            echo  Update needed: !LOCAL_SHA! -^> !REMOTE_SHA!
-        )
-    ) else (
-        echo  Could not reach GitHub. Proceeding with build...
-    )
-    echo.
-)
-
-echo [1/10] Checking Python...
+echo [1/9] Checking Python...
 where python >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found. Install from https://python.org
+    echo  Tick "Add Python to PATH" during install.
     goto die
 )
 python --version
 echo  OK
 
-echo [2/10] Checking Git...
+echo [2/9] Checking Git...
 where git >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Git not found. Install from https://git-scm.com
@@ -75,13 +44,13 @@ if errorlevel 1 (
 git --version
 echo  OK
 
-echo [3/10] Preparing temp directory...
+echo [3/9] Preparing temp directory...
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
 mkdir "%BUILD_DIR%"
 if errorlevel 1 ( echo  [ERROR] Cannot create %BUILD_DIR% & goto die )
 echo  OK  %BUILD_DIR%
 
-echo [4/10] Cloning repository...
+echo [4/9] Cloning repository...
 echo  URL: %REPO_URL%
 echo.
 git clone --depth=1 "%REPO_URL%" "%BUILD_DIR%"
@@ -89,33 +58,33 @@ echo.
 if errorlevel 1 ( echo  [ERROR] git clone failed & goto die )
 echo  OK  Cloned
 
-echo [5/10] Stamping build SHA...
+echo [5/9] Stamping build SHA...
 cd /d "%BUILD_DIR%"
 for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set COMMIT_SHA=%%h
 echo  Commit: %COMMIT_SHA%
 
 if exist "%PS1_FILE%" del "%PS1_FILE%"
-echo $sha = "%COMMIT_SHA%"                                                             > "%PS1_FILE%"
-echo $file = 'main.py'                                                                >> "%PS1_FILE%"
-echo $content = Get-Content $file -Raw -Encoding UTF8                                 >> "%PS1_FILE%"
-echo $marker = 'class AutoUpdater(QObject):'                                          >> "%PS1_FILE%"
-echo $newline = [System.Environment]::NewLine                                         >> "%PS1_FILE%"
+echo $sha = "%COMMIT_SHA%"                                                              > "%PS1_FILE%"
+echo $file = 'main.py'                                                                 >> "%PS1_FILE%"
+echo $content = Get-Content $file -Raw -Encoding UTF8                                  >> "%PS1_FILE%"
+echo $marker = 'class AutoUpdater(QObject):'                                           >> "%PS1_FILE%"
+echo $newline = [System.Environment]::NewLine                                          >> "%PS1_FILE%"
 echo $insert = 'class AutoUpdater(QObject):' + $newline + '    _BUILT_SHA = ' + [char]39 + $sha + [char]39  >> "%PS1_FILE%"
-echo if ($content -notmatch '_BUILT_SHA') {                                           >> "%PS1_FILE%"
-echo     $content = $content -replace [regex]::Escape($marker), $insert               >> "%PS1_FILE%"
-echo }                                                                                 >> "%PS1_FILE%"
-echo Set-Content $file $content -Encoding UTF8 -NoNewline                             >> "%PS1_FILE%"
+echo if ($content -notmatch '_BUILT_SHA') {                                            >> "%PS1_FILE%"
+echo     $content = $content -replace [regex]::Escape($marker), $insert                >> "%PS1_FILE%"
+echo }                                                                                  >> "%PS1_FILE%"
+echo Set-Content $file $content -Encoding UTF8 -NoNewline                              >> "%PS1_FILE%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1_FILE%"
 del "%PS1_FILE%" >nul 2>&1
 echo  OK
 
-echo [6/10] Installing dependencies...
+echo [6/9] Installing dependencies...
 python -m pip install --upgrade pip --quiet
 python -m pip install pyinstaller PySide6 psutil keyboard aiohttp Pillow --quiet
 if errorlevel 1 ( echo  [ERROR] pip install failed & goto die )
 echo  OK
 
-echo [7/10] Downloading assets...
+echo [7/9] Downloading assets...
 if not exist "assets" mkdir "assets"
 if not exist "assets\logo.png" (
     echo  Downloading logo.png...
@@ -127,7 +96,7 @@ if exist "assets\logo.png" (
 )
 echo  OK
 
-echo [8/10] Building .exe (1-3 min)...
+echo [8/9] Building .exe (1-3 min)...
 echo.
 set "ICON_ARG="
 if exist "assets\app.ico" set "ICON_ARG=--icon=assets\app.ico"
@@ -137,27 +106,28 @@ if errorlevel 1 ( echo  [ERROR] PyInstaller failed & goto die )
 if not exist "dist\%EXE_NAME%.exe" ( echo  [ERROR] .exe not found after build & goto die )
 echo  OK  .exe built
 
-echo [9/10] Copying executable...
+echo [9/9] Installing...
 if "%UPDATE_MODE%"=="1" (
-    timeout /t 3 /nobreak >nul
+    echo  Waiting for old process to exit...
+    timeout /t 4 /nobreak >nul
     set RETRY=0
     :copy_retry
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
     if not errorlevel 1 goto copy_ok
     set /a RETRY+=1
-    if !RETRY! geq 15 ( echo  [ERROR] Cannot replace running exe & goto die )
+    if !RETRY! geq 15 ( echo  [ERROR] Cannot replace exe after 15 attempts & goto die )
     timeout /t 1 /nobreak >nul
     goto copy_retry
     :copy_ok
-    echo  OK  Replaced
+    echo  OK  Replaced old exe
 ) else (
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul
     if errorlevel 1 ( echo  [ERROR] Copy failed & goto die )
-    echo  OK  Copied
+    echo  OK  Copied to %TARGET_EXE%
 )
 for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
-echo [10/10] Finalizing...
+echo  Finalizing...
 ie4uinit.exe -ClearIconCache >nul 2>&1
 ie4uinit.exe -show >nul 2>&1
 if not exist "%DEST_DIR%plugins"  mkdir "%DEST_DIR%plugins"
@@ -175,7 +145,6 @@ echo  Wrote version.txt: %COMMIT_SHA%
 
 cd /d "%SCRIPT_DIR%"
 rmdir /s /q "%BUILD_DIR%" >nul 2>&1
-echo  OK
 
 echo.
 echo  ==========================================
@@ -189,6 +158,7 @@ if "%UPDATE_MODE%"=="1" (
     start "" "%TARGET_EXE%"
     exit /b 0
 )
+
 echo  Press any key to launch...
 pause >nul
 start "" "%TARGET_EXE%"
