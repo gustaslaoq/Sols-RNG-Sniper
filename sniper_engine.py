@@ -176,7 +176,12 @@ class SnipeProfile:
                 if not kw.strip():
                     continue
                 try:
-                    pat = re.compile(kw if self.use_regex else re.escape(kw), flag)
+                    if self.use_regex:
+                        pattern = kw
+                    else:
+                        escaped = re.escape(kw)
+                        pattern = rf"\b{escaped}\b"
+                    pat = re.compile(pattern, flag)
                     out.append(pat)
                 except re.error as exc:
                     logger.warning("[Profile:%s] Bad pattern %r: %s", self.name, kw, exc)
@@ -685,15 +690,23 @@ class LinkResolver:
 # PROFILE FILTER
 # ─────────────────────────────────────────────────────────────────────────────
 
+_URL_STRIP_RE = re.compile(
+    r'https?://\S+|roblox://\S+', re.IGNORECASE)
+
+def _strip_urls(text: str) -> str:
+    return _URL_STRIP_RE.sub(" ", text).strip()
+
+
 class ProfileFilter:
     def __init__(self, config: SniperConfig):
         self._cfg = config
 
     def evaluate(self, text: str) -> Optional[SnipeProfile]:
+        clean     = _strip_urls(text)
         profiles  = self._cfg.profiles
         global_p  = next((p for p in profiles if p.locked), None)
 
-        if global_p and global_p.enabled and global_p.matches_blacklist(text):
+        if global_p and global_p.enabled and global_p.matches_blacklist(clean):
             return None
 
         sorted_profiles = sorted(
@@ -702,21 +715,22 @@ class ProfileFilter:
         )
 
         for p in sorted_profiles:
-            if p.matches_blacklist(text):
+            if p.matches_blacklist(clean):
                 continue
-            if p.matches_triggers(text):
+            if p.matches_triggers(clean):
                 return p
 
         return None
 
     def evaluate_detailed(self, text: str) -> tuple:
+        clean     = _strip_urls(text)
         profiles  = self._cfg.profiles
         global_p  = next((p for p in profiles if p.locked), None)
 
-        if global_p and global_p.enabled and global_p.matches_blacklist(text):
+        if global_p and global_p.enabled and global_p.matches_blacklist(clean):
             hit = next(
                 (m.group(0) for pat in global_p._compiled_blacklist
-                 if (m := pat.search(text))),
+                 if (m := pat.search(clean))),
                 "?"
             )
             return None, f"global blacklist keyword '{hit}'"
@@ -727,14 +741,14 @@ class ProfileFilter:
         )
 
         for p in sorted_profiles:
-            if p.matches_blacklist(text):
+            if p.matches_blacklist(clean):
                 hit = next(
                     (m.group(0) for pat in p._compiled_blacklist
-                     if (m := pat.search(text))),
+                     if (m := pat.search(clean))),
                     "?"
                 )
                 return None, f"profile '{p.name}' blacklist keyword '{hit}'"
-            if p.matches_triggers(text):
+            if p.matches_triggers(clean):
                 return p, ""
 
         return None, "no profile trigger matched"
