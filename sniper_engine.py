@@ -1385,6 +1385,9 @@ class SniperEngine:
             self._log(LogLevel.WARN,
                 f"[BLACKLIST] Blocked {author} — reason: {entry.reason if entry else '?'}")
             return
+        elif author_id:
+            self._log(LogLevel.DEBUG,
+                f"[BLACKLIST] {author} ({author_id}) not blacklisted", dev_only=True)
 
         profile, reject_reason = (
             self._filter.evaluate_detailed(full) if self._filter else (None, "no filter")
@@ -1422,7 +1425,7 @@ class SniperEngine:
         self.metrics["links_detected"] += 1
         place_id, code, uri = link
         self._log(LogLevel.DEBUG,
-            f"[LINK] Extracted URI: {uri[:80]}", dev_only=True)
+            f"[LINK] Extracted → place_id={place_id}, uri={uri[:80]}", dev_only=True)
 
         now = time.monotonic()
         if uri in self._recent_servers and now < self._recent_servers[uri]:
@@ -1484,10 +1487,16 @@ class SniperEngine:
         # ── Optional auto-join — execute first for minimum latency ───────────
         if self.config.auto_join_enabled:
             if self.config.auto_join_delay_ms:
+                self._log(LogLevel.DEBUG,
+                    f"[JOIN] Waiting {self.config.auto_join_delay_ms}ms before joining…",
+                    dev_only=True)
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
 
             roblox_running = ProcessManager.is_roblox_running()
             in_game        = ProcessManager.is_in_game() if roblox_running else False
+            self._log(LogLevel.DEBUG,
+                f"[JOIN] roblox_running={roblox_running}, in_game={in_game}",
+                dev_only=True)
 
             if roblox_running and in_game:
                 self._log(LogLevel.INFO,
@@ -1512,10 +1521,21 @@ class SniperEngine:
                 ProcessManager.open_roblox_link(uri)
 
             if profile.verify_biome_name and self.config.anti_bait_enabled:
+                self._log(LogLevel.DEBUG,
+                    f"[JOIN] Spawning biome verification task for '{profile.verify_biome_name}'",
+                    dev_only=True)
                 asyncio.create_task(self._verify_biome(profile, uri))
+            else:
+                self._log(LogLevel.DEBUG,
+                    f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
+                    f"anti_bait={self.config.anti_bait_enabled})", dev_only=True)
+        else:
+            self._log(LogLevel.DEBUG, "[JOIN] auto_join_enabled=False — skipping join",
+                dev_only=True)
 
         # ── Sound alert ───────────────────────────────────────────────────────
         if getattr(self.config, "sound_alert_enabled", False):
+            self._log(LogLevel.DEBUG, "[ENGINE] Sound alert firing…", dev_only=True)
             try:
                 import winsound
                 freq = getattr(self.config, "sound_alert_freq", 1000)
@@ -1523,8 +1543,8 @@ class SniperEngine:
                 threading.Thread(
                     target=lambda: winsound.Beep(freq, dur),
                     daemon=True, name="SoundAlert").start()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log(LogLevel.DEBUG, f"[ENGINE] Sound alert failed: {exc}", dev_only=True)
 
         # ── Build snipe data dict ─────────────────────────────────────────────
         snipe_data = {
@@ -1624,23 +1644,35 @@ class SniperEngine:
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         if not profile.verify_biome_name:
-            return   # no verification configured for this profile
+            self._log(LogLevel.DEBUG,
+                "[ANTI-BAIT] No biome name configured — skipping verification", dev_only=True)
+            return
         loop  = asyncio.get_running_loop()
+        self._log(LogLevel.DEBUG,
+            f"[ANTI-BAIT] Waiting for biome (expected: {profile.verify_biome_name.upper()}, "
+            f"timeout: 75s)…", dev_only=True)
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(75.0))
 
         if biome is None:
-            self._log(LogLevel.WARN, "[ANTI-BAIT] Biome verification timed out")
+            self._log(LogLevel.WARN,
+                "[ANTI-BAIT] Biome verification timed out — no biome detected in log within 75s")
             return
 
         expected = profile.verify_biome_name.upper()
         detected = biome.upper()
         matched  = (detected == expected)
 
+        self._log(LogLevel.DEBUG,
+            f"[ANTI-BAIT] Biome read from log: '{detected}' (expected: '{expected}')",
+            dev_only=True)
+
         if matched:
             self._log(LogLevel.SUCCESS,
                 f"[ANTI-BAIT] Biome verified ✓  ({detected})")
             action = self.config.biome_leave_action
+            self._log(LogLevel.DEBUG,
+                f"[ANTI-BAIT] biome_leave_action = '{action}'", dev_only=True)
             if action != "none":
                 asyncio.create_task(self._biome_watcher(expected, action))
             if self._plugins:
@@ -1652,8 +1684,18 @@ class SniperEngine:
             self._log(LogLevel.WARN,
                 f"[ANTI-BAIT] Wrong biome — expected '{expected}', got '{detected}'")
             if profile.kill_on_wrong_biome:
-                self._log(LogLevel.WARN, "[ANTI-BAIT] Killing Roblox…")
-                ProcessManager.kill_roblox()
+                action = self.config.biome_leave_action
+                self._log(LogLevel.DEBUG,
+                    f"[ANTI-BAIT] kill_on_wrong_biome=True, biome_leave_action='{action}'",
+                    dev_only=True)
+                if action == "home":
+                    self._log(LogLevel.INFO,
+                        "[ANTI-BAIT] Wrong biome — killing Roblox and returning to home…")
+                    await loop.run_in_executor(
+                        None, lambda: self._execute_biome_leave("home"))
+                else:
+                    self._log(LogLevel.WARN, "[ANTI-BAIT] Killing Roblox…")
+                    ProcessManager.kill_roblox()
 
         try:
             self.on_biome(expected, detected, matched)
@@ -1663,6 +1705,8 @@ class SniperEngine:
     async def _biome_watcher(self, expected_biome: str, action: str):
         self._log(LogLevel.INFO,
             f"[BIOME WATCHER] Monitoring for biome change from '{expected_biome}'…")
+        self._log(LogLevel.DEBUG,
+            f"[BIOME WATCHER] action='{action}', polling every 3s", dev_only=True)
         loop     = asyncio.get_running_loop()
         interval = 3.0
         stable_count   = 0
@@ -1678,10 +1722,18 @@ class SniperEngine:
             try:
                 current = await loop.run_in_executor(
                     None, self._log_reader.get_current_biome)
-            except Exception:
+            except Exception as exc:
+                self._log(LogLevel.DEBUG,
+                    f"[BIOME WATCHER] get_current_biome error: {exc}", dev_only=True)
                 continue
 
+            self._log(LogLevel.DEBUG,
+                f"[BIOME WATCHER] Poll: current='{current}' expected='{expected_biome}'",
+                dev_only=True)
+
             if current is None:
+                self._log(LogLevel.DEBUG,
+                    "[BIOME WATCHER] No biome detected yet (log not updated)", dev_only=True)
                 continue
 
             current_upper = current.upper()
@@ -1697,9 +1749,16 @@ class SniperEngine:
                     await loop.run_in_executor(None, lambda: self._execute_biome_leave(action))
                     return
             else:
+                if stable_count > 0:
+                    self._log(LogLevel.DEBUG,
+                        f"[BIOME WATCHER] Biome back to expected — resetting stable counter",
+                        dev_only=True)
                 stable_count = 0
 
     def _execute_biome_leave(self, action: str):
+        self._log(LogLevel.DEBUG,
+            f"[BIOME WATCHER] _execute_biome_leave called with action='{action}'",
+            dev_only=True)
         if self._plugins:
             self._plugins.broadcast("on_biome_left", {"action": action})
         if action == "kill":
@@ -1708,15 +1767,22 @@ class SniperEngine:
         elif action == "home":
             self._log(LogLevel.INFO,
                 "[BIOME WATCHER] Returning Roblox to home page — ready for next snipe…")
-            ProcessManager.kill_roblox_and_wait(timeout=5.0)
+            killed = ProcessManager.kill_roblox_and_wait(timeout=5.0)
+            self._log(LogLevel.DEBUG,
+                f"[BIOME WATCHER] kill_roblox_and_wait result={killed}", dev_only=True)
             time.sleep(0.5)
             self._log_reader.mark_launch()   # reset log reader so next snipe reads fresh log
             try:
                 if platform.system() == "Windows":
                     os.startfile("roblox://")
+                    self._log(LogLevel.DEBUG,
+                        "[BIOME WATCHER] os.startfile('roblox://') called", dev_only=True)
                 elif platform.system() == "Darwin":
                     subprocess.Popen(["open", "roblox://"])
                 else:
                     subprocess.Popen(["xdg-open", "roblox://"])
             except Exception as exc:
                 self._log(LogLevel.ERROR, f"[BIOME WATCHER] Failed to relaunch Roblox: {exc}")
+        else:
+            self._log(LogLevel.DEBUG,
+                f"[BIOME WATCHER] Unknown action '{action}' — no-op", dev_only=True)
