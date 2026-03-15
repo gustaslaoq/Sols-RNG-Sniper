@@ -168,7 +168,7 @@ _setup_crash_reporter()
 
 APP_NAME      = "SLAOQ'S SOL'S RNG SNIPER"
 APP_VERSION   = "1.0"
-GITHUB_REPO   = "" 
+GITHUB_REPO   = "gustaslaoq/Sols-RNG-Sniper" 
 WIN_W         = 1200
 WIN_H         = 800
 WIN_MIN_W     = 980
