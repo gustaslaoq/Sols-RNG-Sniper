@@ -279,15 +279,14 @@ def _default_profiles() -> list:
 @dataclass
 class WebhookConfig:
     """Discord webhook configuration for event notifications."""
-    url:            str  = ""
-    enabled:        bool = False
-    on_snipe:       bool = True
-    on_biome:       bool = True
-    on_start:       bool = False
-    on_stop:        bool = False
-    on_owner_info:  bool = True    # Private server owner lookup embed
-    ping_type:      str  = "none"  # "none" | "role" | "user"
-    ping_target:    str  = ""      # role/user ID when ping_type is role/user
+    url:          str  = ""
+    enabled:      bool = False
+    on_snipe:     bool = True
+    on_biome:     bool = True
+    on_start:     bool = False
+    on_stop:      bool = False
+    ping_type:    str  = "none"
+    ping_target:  str  = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -331,9 +330,6 @@ class SniperConfig:
     delete_watch_seconds:    int           = 0
     # Extra Discord tokens (optional, listen-only secondary accounts)
     extra_tokens:            list          = field(default_factory=list)
-    # Private server owner lookup via Roblox API
-    owner_info_enabled:      bool          = False
-    roblox_cookie:           str           = ""    # .ROBLOSECURITY for owner lookup
     # Internal — not serialised
     config_path:             str           = field(default="", repr=False, compare=False)
 
@@ -378,8 +374,6 @@ class SniperConfig:
             "sound_alert_dur_ms":   self.sound_alert_dur_ms,
             "delete_watch_seconds": self.delete_watch_seconds,
             "extra_tokens":         self.extra_tokens,
-            "owner_info_enabled":   self.owner_info_enabled,
-            "roblox_cookie":        self.roblox_cookie,
         }
         with open(self.config_path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
