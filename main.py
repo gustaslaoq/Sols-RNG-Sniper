@@ -432,9 +432,9 @@ class PluginRecord:
 
 class PluginLoader:
     def __init__(self, plugins_dir: Path):
-        self._dir     = plugins_dir
-        self._plugins: list[PluginRecord] = []
-        self._state_path = plugins_dir.parent / "plugin_states.json"
+        self._dir        = plugins_dir
+        self._plugins:   list[PluginRecord] = []
+        self._state_path = _get_app_dir() / "plugin_states.json"
 
     def _load_states(self) -> dict:
         try:
@@ -1960,11 +1960,8 @@ class Sidebar(QFrame):
         self._toggle_btn.setFixedSize(32, 32)
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.clicked.connect(self._toggle_collapse)
-        # Alinhado à direita
         lay.addWidget(self._toggle_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-        # Inicializa o primeiro botão (Home) e carrega a logo
-        self._sel(0)
         self._load_logo()
 
         self._width_anim = QPropertyAnimation(self, b"minimumWidth")
@@ -1972,12 +1969,30 @@ class Sidebar(QFrame):
         self._width_anim.setDuration(220)
         self._width_anim.finished.connect(self._on_anim_finished)
 
-        QTimer.singleShot(0, lambda: self._sel(0, _initial=True))
+        self._btns[0].set_active(True)
+        self._active_idx = 0
 
     def _on_anim_finished(self):
-        """Snap both indicators to the active button after sidebar resize."""
         self._move_indicator_to(self._active_idx)
         self._move_act_indicator_to(self._active_idx)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._snap_indicators(self._active_idx)
+
+    def _snap_indicators(self, idx: int):
+        if idx < 0 or idx >= len(self._btns):
+            return
+        btn = self._btns[idx]
+        y   = float(btn.mapTo(self, QPoint(0, 0)).y())
+        h   = btn.height()
+        self._anim_y       = y
+        self._target_y     = y
+        self._act_anim_y   = y
+        self._act_target_y = y
+        self._anim_h       = h
+        self._act_anim_h   = h
+        self.update()
 
     def _toggle_collapse(self):
         self._collapsed = not self._collapsed
@@ -2076,20 +2091,12 @@ class Sidebar(QFrame):
             self._act_anim_y = self._act_target_y
         self._act_timer.start()
 
-    def _sel(self, idx: int, _initial: bool = False):
+    def _sel(self, idx: int):
         self._active_idx = idx
         for i, b in enumerate(self._btns):
             b.set_active(i == idx)
-        if _initial:
-            btn = self._btns[idx]
-            y   = float(btn.mapTo(self, QPoint(0, 0)).y())
-            self._anim_y       = y
-            self._target_y     = y
-            self._act_anim_y   = y
-            self._act_target_y = y
-            self._anim_h       = btn.height()
-            self._act_anim_h   = btn.height()
-            self.update()
+        if self._act_anim_y < 0:
+            self._snap_indicators(idx)
         else:
             self._move_indicator_to(idx)
             self._move_act_indicator_to(idx)
