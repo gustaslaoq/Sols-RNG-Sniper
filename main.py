@@ -1785,12 +1785,8 @@ def _launch_bat_update() -> bool:
     wrapper_content = (
         "@echo off\r\n"
         f"title Slaoq's Sniper \u2014 Auto Update\r\n"
-        f"call \"{bat}\" --update \"{target}\"\r\n"
-        "if errorlevel 1 (\r\n"
-        "    echo.\r\n"
-        "    echo  [ERROR] Build failed. See messages above.\r\n"
-        "    pause\r\n"
-        ")\r\n"
+        "color 0F\r\n"
+        f"cmd /k \"{bat}\" --update \"{target}\"\r\n"
     )
 
     try:
