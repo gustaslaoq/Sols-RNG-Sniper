@@ -1205,13 +1205,11 @@ class Bridge(QObject):
 
     def stop(self):
         if self._loop and self._loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self.engine.stop(), self._loop)
-            try:
-                future.result(timeout=5.0)
-            except Exception:
-                pass
+            asyncio.run_coroutine_threadsafe(self.engine.stop(), self._loop)
         if self._thread:
-            self._thread.join(timeout=5.0)
+            threading.Thread(
+                target=self._thread.join, args=(4.0,),
+                daemon=True, name="EngineJoin").start()
 
     def reload(self, cfg: SniperConfig):
         self.engine.reload_config(cfg)
@@ -1786,9 +1784,12 @@ def _launch_bat_update() -> bool:
 
     wrapper_content = (
         "@echo off\r\n"
-        f"title Slaoq's Sniper \u2014 Auto Update\r\n"
+        "title Slaoq's Sniper \u2014 Auto Update\r\n"
         "color 0F\r\n"
-        f"cmd /k \"{bat}\" --update \"{target}\"\r\n"
+        f"call \"{bat}\" --update \"{target}\"\r\n"
+        "echo.\r\n"
+        "echo  Done. This window will stay open.\r\n"
+        "pause >nul\r\n"
     )
 
     try:
@@ -3948,16 +3949,17 @@ class MainWindow(QMainWindow):
         if self._is_paused: self._toggle_pause_state()
 
     def _stop(self):
-        if self._br:
-            self._br.stop()
-            self._br = None
         self._run       = False
         self._is_paused = False
         self._pd.on_stop()
-
         self._tb.badge.set_state("off")
         self._pd.badge.set_state("off")
         self._pd.c_status.set_value("STOPPED")
+
+        if self._br:
+            br = self._br
+            self._br = None
+            threading.Thread(target=br.stop, daemon=True, name="StopEngine").start()
 
         self._tray_notify("Sniper Stopped", "Engine has been shut down.", get_tray_icon_img())
         self._send_webhook("stop")
