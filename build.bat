@@ -2,6 +2,7 @@
 setlocal EnableDelayedExpansion
 
 set "REPO_URL=https://github.com/gustaslaoq/Sols-RNG-Sniper.git"
+set "REPO_API=https://api.github.com/repos/gustaslaoq/Sols-RNG-Sniper/commits/main"
 set "EXE_NAME=SlaoqSniper"
 set "LOGO_URL=https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png"
 set "COMMIT_SHA=unknown"
@@ -25,6 +26,33 @@ echo  Repo   : %REPO_URL%
 echo  Output : %TARGET_EXE%
 echo  ==========================================
 echo.
+
+if "%UPDATE_MODE%"=="0" (
+    echo [0/10] Checking if already up to date...
+    set "REMOTE_SHA="
+    set "LOCAL_SHA=none"
+
+    for /f "usebackq delims=" %%s in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "try { (Invoke-WebRequest -Uri '%REPO_API%' -UseBasicParsing | ConvertFrom-Json).sha.Substring(0,7) } catch { '' }" 2^>nul`) do set "REMOTE_SHA=%%s"
+
+    if exist "%SCRIPT_DIR%version.txt" (
+        set /p LOCAL_SHA=<"%SCRIPT_DIR%version.txt"
+    )
+
+    if not "!REMOTE_SHA!"=="" (
+        if "!LOCAL_SHA!"=="!REMOTE_SHA!" (
+            echo  Already up to date ^(!REMOTE_SHA!^). Launching app...
+            echo.
+            start "" "%TARGET_EXE%"
+            exit /b 0
+        )
+        echo  Update needed: !LOCAL_SHA! -^> !REMOTE_SHA!
+    ) else (
+        echo  Could not reach GitHub. Proceeding with local build...
+    )
+    echo.
+)
+
 echo [1/10] Checking Python...
 where python >nul 2>&1
 if errorlevel 1 (
@@ -69,16 +97,16 @@ for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set COMMIT_SHA=%%h
 echo  Commit: %COMMIT_SHA%
 
 if exist "%PS1_FILE%" del "%PS1_FILE%"
-echo $sha = "%COMMIT_SHA%"                                            >> "%PS1_FILE%"
-echo $file = 'main.py'                                                >> "%PS1_FILE%"
-echo $content = Get-Content $file -Raw -Encoding UTF8                 >> "%PS1_FILE%"
-echo $marker = 'class AutoUpdater(QObject):'                          >> "%PS1_FILE%"
-echo $newline = [System.Environment]::NewLine                         >> "%PS1_FILE%"
+echo $sha = "%COMMIT_SHA%"                                                         >> "%PS1_FILE%"
+echo $file = 'main.py'                                                             >> "%PS1_FILE%"
+echo $content = Get-Content $file -Raw -Encoding UTF8                              >> "%PS1_FILE%"
+echo $marker = 'class AutoUpdater(QObject):'                                       >> "%PS1_FILE%"
+echo $newline = [System.Environment]::NewLine                                      >> "%PS1_FILE%"
 echo $insert = 'class AutoUpdater(QObject):' + $newline + '    _BUILT_SHA = ' + [char]39 + $sha + [char]39  >> "%PS1_FILE%"
-echo if ($content -notmatch '_BUILT_SHA') {                           >> "%PS1_FILE%"
-echo     $content = $content -replace [regex]::Escape($marker), $insert  >> "%PS1_FILE%"
-echo }                                                                 >> "%PS1_FILE%"
-echo Set-Content $file $content -Encoding UTF8 -NoNewline             >> "%PS1_FILE%"
+echo if ($content -notmatch '_BUILT_SHA') {                                        >> "%PS1_FILE%"
+echo     $content = $content -replace [regex]::Escape($marker), $insert            >> "%PS1_FILE%"
+echo }                                                                              >> "%PS1_FILE%"
+echo Set-Content $file $content -Encoding UTF8 -NoNewline                          >> "%PS1_FILE%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1_FILE%"
 del "%PS1_FILE%" >nul 2>&1
 echo  OK
@@ -136,10 +164,6 @@ if "%UPDATE_MODE%"=="1" (
 for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
 echo [10/10] Finalizing...
-:: Flush Windows icon cache so the new exe icon shows immediately
-ie4uinit.exe -ClearIconCache >nul 2>&1
-ie4uinit.exe -show >nul 2>&1
-:: Flush Windows icon cache so the new .exe icon appears immediately
 ie4uinit.exe -ClearIconCache >nul 2>&1
 ie4uinit.exe -show >nul 2>&1
 if not exist "%DEST_DIR%plugins" mkdir "%DEST_DIR%plugins"
@@ -151,6 +175,10 @@ if not exist "%DEST_DIR%plugins\example_plugin.py" (
         copy "%BUILD_DIR%\plugins\example_plugin.py" "%DEST_DIR%plugins\example_plugin.py" >nul
     )
 )
+
+echo %COMMIT_SHA%> "%DEST_DIR%version.txt"
+echo  Wrote version.txt: %COMMIT_SHA%
+
 cd /d "%SCRIPT_DIR%"
 rmdir /s /q "%BUILD_DIR%" >nul 2>&1
 echo  OK
@@ -172,7 +200,6 @@ pause >nul
 start "" "%TARGET_EXE%"
 exit /b 0
 
-:: ---- error handler (always pauses) ----------------------
 :die
 echo.
 echo  ==========================================
