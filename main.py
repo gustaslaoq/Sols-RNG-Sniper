@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QCheckBox, QScrollArea, QSizePolicy, QSizeGrip,
     QSpinBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QFileDialog, QSplitter, QInputDialog, QMessageBox, QGridLayout,
-    QProgressBar, QComboBox, QSystemTrayIcon, QMenu,
+    QProgressBar, QComboBox, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
 )
 import aiohttp
 
@@ -1446,169 +1446,253 @@ class KeySequenceEdit(QLineEdit):
 
 # LOADING
 
+class _SplashBarWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._value = 0.0
+        self._total = 1
+        self.setFixedHeight(4)
+        self.setStyleSheet("background: transparent;")
+
+    def set_progress(self, value: float, total: int):
+        self._value  = value
+        self._total  = total
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        filled = int(w * min(self._value, self._total) / max(1, self._total))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#1c1c1c"))
+        p.drawRoundedRect(0, 0, w, 4, 2, 2)
+        if filled > 0:
+            p.setBrush(QColor("#ffffff"))
+            p.drawRoundedRect(0, 0, filled, 4, 2, 2)
+        p.end()
+
+
 class SplashScreen(QWidget):
     finished = Signal()
 
     _TASKS = [
         "Inicializando o ambiente de execução…",
-        "Carregando perfis e configurações salvas…",
-        "Verificando integridade dos assets…",
-        "Conectando ao sistema de monitoramento…",
+        "Verificando atualizações disponíveis…",
+        "Carregando perfis e configurações…",
         "Preparando o motor de snipe…",
         "Pronto.",
     ]
 
+    _HERO_H       = 118
+    _HERO_Y       = 68
+    _SLIDE_DIST   = 28
+    _BOTTOM_Y_OFF = 28
+
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedSize(420, 280)
 
         screen = QApplication.primaryScreen().geometry()
-        self.move(
-            screen.center().x() - self.width()  // 2,
-            screen.center().y() - self.height() // 2,
-        )
+        self.move(screen.center().x() - 210, screen.center().y() - 140)
 
-        self._opacity   = 0.0
-        self._task_idx  = 0
-        self._bar_value = 0.0
-        self._bar_target = 0.0
-        self._slide_offset = 28.0
+        self._opacity        = 0.0
+        self._hero_t         = 0.0
+        self._bottom_alpha   = 0.0
+        self._bar_value      = 0.0
+        self._bar_target     = 0.0
+        self._task_idx       = 0
+        self._update_checked = False
+        self._update_found   = False
+        self._hero_done      = False
         self._build()
 
     def _build(self):
         self._root = QWidget(self)
         self._root.setObjectName("SplashRoot")
-        self._root.setFixedSize(self.size())
+        self._root.setGeometry(0, 0, 420, 280)
         self._root.setStyleSheet(
-            "QWidget#SplashRoot { background-color: #000000; border: 1px solid #1c1c1c; border-radius: 16px; }")
+            "QWidget#SplashRoot{"
+            "background-color:#000000;"
+            "border:1px solid #1c1c1c;"
+            "border-radius:16px;}")
 
-        outer = QVBoxLayout(self._root)
-        outer.setContentsMargins(40, 44, 40, 32)
-        outer.setSpacing(0)
+        pad  = 40
+        inner_w = 420 - pad * 2
+
+        self._hero_w = QWidget(self._root)
+        self._hero_w.setGeometry(pad, self._HERO_Y + self._SLIDE_DIST, inner_w, self._HERO_H)
+        self._hero_w.setStyleSheet("background:transparent;")
+        hl = QVBoxLayout(self._hero_w)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(10)
+        hl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
 
         self._logo_lbl = QLabel()
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._logo_lbl.setFixedSize(64, 64)
-        self._logo_lbl.setStyleSheet("background: transparent;")
+        self._logo_lbl.setStyleSheet("background:transparent;")
         if LOGO_PATH.exists():
             px = QPixmap(str(LOGO_PATH)).scaled(
-                64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                64, 64,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self._logo_lbl.setPixmap(px)
-        outer.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        outer.addSpacing(14)
+        hl.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._name_lbl = QLabel(APP_NAME)
         self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._name_lbl.setStyleSheet(
-            "color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 3px; background: transparent;")
-        outer.addWidget(self._name_lbl)
+            "color:#ffffff;font-size:11px;font-weight:700;"
+            "letter-spacing:3px;background:transparent;")
+        hl.addWidget(self._name_lbl)
 
         self._ver_lbl = QLabel(f"v{APP_VERSION}")
         self._ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ver_lbl.setStyleSheet(
-            "color: #555; font-size: 10px; letter-spacing: 1px; background: transparent;")
-        outer.addWidget(self._ver_lbl)
+            "color:#555555;font-size:10px;letter-spacing:1px;background:transparent;")
+        hl.addWidget(self._ver_lbl)
 
-        outer.addStretch()
+        bottom_y = 280 - self._BOTTOM_Y_OFF - 32
+        self._bottom_w = QWidget(self._root)
+        self._bottom_w.setGeometry(pad, bottom_y, inner_w, 32)
+        self._bottom_w.setStyleSheet("background:transparent;")
+        bl = QVBoxLayout(self._bottom_w)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(7)
 
-        self._bar_canvas = QWidget()
-        self._bar_canvas.setFixedHeight(4)
-        self._bar_canvas.setStyleSheet("background: transparent;")
-        outer.addWidget(self._bar_canvas)
-
-        outer.addSpacing(8)
+        self._bar_w = _SplashBarWidget()
+        bl.addWidget(self._bar_w)
 
         self._task_lbl = QLabel(self._TASKS[0])
         self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._task_lbl.setStyleSheet("color: #555; font-size: 10px; background: transparent;")
-        outer.addWidget(self._task_lbl)
+        self._task_lbl.setStyleSheet("color:#555555;font-size:10px;background:transparent;")
+        bl.addWidget(self._task_lbl)
+
+        self._bottom_eff = QGraphicsOpacityEffect(self._bottom_w)
+        self._bottom_eff.setOpacity(0.0)
+        self._bottom_w.setGraphicsEffect(self._bottom_eff)
+
+        self._master_timer = QTimer(self)
+        self._master_timer.setInterval(16)
+        self._master_timer.timeout.connect(self._tick)
 
         self._step_timer = QTimer(self)
-        self._step_timer.setInterval(480)
+        self._step_timer.setInterval(550)
         self._step_timer.timeout.connect(self._step)
 
-        self._smooth_timer = QTimer(self)
-        self._smooth_timer.setInterval(16)
-        self._smooth_timer.timeout.connect(self._tick_smooth)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if not hasattr(self, '_bar_canvas'):
-            return
-        bar = self._bar_canvas
-        pos = bar.mapTo(self, QPoint(0, 0))
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        total = bar.width()
-        filled = int(total * (self._bar_value / max(1, len(self._TASKS))))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#1a1a1a"))
-        painter.drawRoundedRect(pos.x(), pos.y(), total, 4, 2, 2)
-        if filled > 0:
-            painter.setBrush(QColor("#ffffff"))
-            painter.drawRoundedRect(pos.x(), pos.y(), filled, 4, 2, 2)
-        painter.end()
-
     def start(self):
-        self.show()
-        self._fade_in()
-
-    def _fade_in(self):
         self.setWindowOpacity(0.0)
-        self._fade_timer = QTimer(self)
-        self._fade_timer.setInterval(16)
-        self._opacity = 0.0
-        self._fade_timer.timeout.connect(self._tick_fade_in)
-        self._fade_timer.start()
+        self.show()
+        self._master_timer.start()
 
-    def _tick_fade_in(self):
-        self._opacity = min(1.0, self._opacity + 0.07)
-        self.setWindowOpacity(self._opacity)
+    def _tick(self):
+        changed = False
 
-        ease = 1.0 - self._opacity
-        offset = self._slide_offset * (ease ** 2)
-        base_y = (self.height() - self._root.height()) // 2
-        self._root.move(0, base_y + int(offset))
+        if self._opacity < 1.0:
+            self._opacity = min(1.0, self._opacity + 0.065)
+            self.setWindowOpacity(self._opacity)
+            changed = True
 
-        if self._opacity >= 1.0:
-            self._root.move(0, 0)
-            self._fade_timer.stop()
-            self._smooth_timer.start()
-            self._step_timer.start()
+        if self._hero_t < 1.0:
+            self._hero_t = min(1.0, self._hero_t + 0.055)
+            ease   = 1.0 - self._hero_t
+            offset = int(self._SLIDE_DIST * (ease ** 2))
+            pad    = 40
+            self._hero_w.move(pad, self._HERO_Y + offset)
+            changed = True
+            if self._hero_t >= 1.0:
+                self._hero_w.move(pad, self._HERO_Y)
+                self._hero_done = True
+                self._step_timer.start()
 
-    def _tick_smooth(self):
-        diff = self._bar_target - self._bar_value
-        if abs(diff) < 0.01:
-            self._bar_value = self._bar_target
-        else:
-            self._bar_value += diff * 0.12
-        self.update()
+        if self._hero_done and self._bottom_alpha < 1.0:
+            self._bottom_alpha = min(1.0, self._bottom_alpha + 0.06)
+            self._bottom_eff.setOpacity(self._bottom_alpha)
+            changed = True
+
+        if self._hero_done:
+            diff = self._bar_target - self._bar_value
+            if abs(diff) > 0.004:
+                self._bar_value += diff * 0.11
+                self._bar_w.set_progress(self._bar_value, len(self._TASKS))
+                changed = True
 
     def _step(self):
         self._task_idx += 1
         self._bar_target = float(self._task_idx)
+
+        if self._task_idx == 1:
+            self._task_lbl.setText(self._TASKS[self._task_idx])
+            self._step_timer.stop()
+            self._launch_update_check()
+            return
+
         if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
+
         if self._task_idx >= len(self._TASKS):
             self._step_timer.stop()
-            QTimer.singleShot(500, self._fade_out)
+            QTimer.singleShot(600, self._begin_fade_out)
 
-    def _fade_out(self):
-        self._smooth_timer.stop()
-        self._fade_timer2 = QTimer(self)
-        self._fade_timer2.setInterval(16)
-        self._fade_timer2.timeout.connect(self._tick_fade_out)
-        self._fade_timer2.start()
+    def _launch_update_check(self):
+        def _worker():
+            found    = False
+            new_sha  = ""
+            if GITHUB_REPO:
+                try:
+                    url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
+                    req = urllib.request.Request(
+                        url, headers={"User-Agent": "SniperApp/SplashCheck"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        data = json.loads(resp.read())
+                    new_sha   = data.get("sha", "")[:7]
+                    built_sha = getattr(AutoUpdater, "_BUILT_SHA", "")
+                    is_frozen = getattr(sys, "frozen", False)
+                    if new_sha and (not is_frozen or new_sha != built_sha):
+                        found = True
+                except Exception:
+                    pass
+            self._update_checked = True
+            self._update_found   = found
+            self._pending_sha    = new_sha
+            QTimer.singleShot(0, self._on_check_done)
+
+        threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
+
+    def _on_check_done(self):
+        if self._update_found:
+            self._task_lbl.setText("Nova versão encontrada — atualizando automaticamente…")
+            self._bar_target = float(len(self._TASKS))
+            QTimer.singleShot(1400, self._do_silent_update)
+        else:
+            self._step_timer.start()
+            self._step()
+
+    def _do_silent_update(self):
+        self._task_lbl.setText("Reconstruindo o executável — aguarde…")
+        updater = AutoUpdater()
+        threading.Thread(
+            target=updater.rebuild_and_restart, daemon=True, name="SilentRebuild").start()
+        QTimer.singleShot(2500, self._begin_fade_out)
+
+    def _begin_fade_out(self):
+        self._step_timer.stop()
+        self._fade_out_timer = QTimer(self)
+        self._fade_out_timer.setInterval(16)
+        self._fade_out_timer.timeout.connect(self._tick_fade_out)
+        self._fade_out_timer.start()
 
     def _tick_fade_out(self):
-        self._opacity = max(0.0, self._opacity - 0.09)
+        self._opacity = max(0.0, self._opacity - 0.085)
         self.setWindowOpacity(self._opacity)
         if self._opacity <= 0.0:
-            self._fade_timer2.stop()
+            self._fade_out_timer.stop()
+            self._master_timer.stop()
+            self._step_timer.stop()
             self.close()
             self.finished.emit()
 
@@ -1657,8 +1741,6 @@ class AutoUpdater(QObject):
             latest_sha = data.get("sha", "")[:7]
             if not latest_sha:
                 return
-            # If frozen: only update when SHA changed
-            # If running from source: always notify (dev mode convenience)
             if self._is_frozen and latest_sha == self._built_sha:
                 return
             self.update_available.emit(latest_sha)
@@ -3713,24 +3795,14 @@ class MainWindow(QMainWindow):
         if self._br: self._br.reload(cfg)
 
     def _on_update_available(self, sha: str):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Update Available")
-        msg.setText(
-            f"A new version is available (commit {sha}).\n\n"
-            "The app will close, download the latest source code,\n"
-            "rebuild the .exe and restart automatically.\n\n"
-            "Proceed?")
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            self._pd.show_notification(
-                f"Rebuilding from source (commit {sha})…", "warning")
-            threading.Thread(
-                target=self._updater.rebuild_and_restart,
-                daemon=True, name="Rebuild").start()
-        else:
-            self._pd.show_notification(f"Update {sha} skipped.", "warning")
+        self._pd.show_notification(
+            f"Nova versão detectada ({sha}) — reconstruindo automaticamente…", "warning")
+        e = LogEntry(LogLevel.WARN, f"[UPDATE] Novo commit detectado ({sha}), reconstruindo…")
+        self._pl.append(e); self._pd.append(e, self._dev)
+        self._stop()
+        threading.Thread(
+            target=self._updater.rebuild_and_restart,
+            daemon=True, name="AutoRebuild").start()
 
     def _is_snipe_log(self, e: LogEntry) -> bool:
         if e.level in (LogLevel.SNIPE, LogLevel.SUCCESS, LogLevel.ERROR, LogLevel.WARN):
