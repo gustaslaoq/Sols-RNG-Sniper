@@ -2,116 +2,182 @@
 setlocal EnableDelayedExpansion
 
 :: ============================================================
-::  Slaoq's Sniper — Build & Deploy Script
-::  
-::  Modes:
-::    build.bat              → fresh build into current folder
-::    build.bat --update "C:\path\to\SlaoqSniper.exe"
-::                           → rebuild + replace running .exe + restart
+::  Slaoq's Sniper - Build & Deploy Script
 ::
-::  Flow:
-::    1. Check prerequisites (Python, pip, git)
-::    2. Clone repo into a temp folder
-::    3. Stamp the commit SHA into main.py (for the auto-updater)
-::    4. pip install dependencies
-::    5. PyInstaller --onefile build
-::    6. Copy .exe to destination
-::    7. Create plugins/ and assets/ folders
-::    8. Download assets (logo, icon)
-::    9. Clean up temp folder
-::   10. If --update mode: wait for old process to exit, then restart
+::  Modes:
+::    build.bat              -> fresh build into current folder
+::    build.bat --update "C:\path\to\SlaoqSniper.exe"
+::                           -> rebuild + replace .exe + restart
+::
+::  Steps:
+::    1.  Check Python
+::    2.  Check Git
+::    3.  Check network
+::    4.  Prepare temp directory
+::    5.  Clone repository  (output fully visible on error)
+::    6.  Stamp commit SHA into main.py
+::    7.  pip install dependencies
+::    8.  PyInstaller --onefile build
+::    9.  Copy .exe to destination
+::   10.  Create folders + download assets + copy example plugin
+::   11.  Cleanup temp folder
+::   12.  Restart (--update mode only)
 :: ============================================================
 
-set REPO_URL=https://github.com/gustaslaoq/Sols-RNG-Sniper.git
-set EXE_NAME=SlaoqSniper
-set PYTHON_MIN=3.10
-:: ─────────────────────────────────────────────────────────────────────────────
+:: ---- CONFIGURE THESE ----------------------------------------
+set "REPO_URL=https://github.com/gustaslaoq/Sols-RNG-Sniper.git"
+set "EXE_NAME=SlaoqSniper"
+set "LOGO_URL=https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png"
+:: -------------------------------------------------------------
 
-set UPDATE_MODE=0
-set TARGET_EXE=
-set SCRIPT_DIR=%~dp0
+set "UPDATE_MODE=0"
+set "TARGET_EXE="
+set "SCRIPT_DIR=%~dp0"
 
-if "%~1"=="--update" (
-    set UPDATE_MODE=1
-    set TARGET_EXE=%~2
+if /i "%~1"=="--update" (
+    set "UPDATE_MODE=1"
+    set "TARGET_EXE=%~2"
 )
+if "%TARGET_EXE%"=="" set "TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%.exe"
 
-:: If no target exe was given in update mode, default to script dir
-if "%TARGET_EXE%"=="" (
-    set TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%.exe
-)
+:: Fixed temp path avoids %RANDOM% collision
+set "BUILD_DIR=%TEMP%\SnipeBuild"
 
 echo.
 echo  ==========================================
-echo   Slaoq's Sniper ^| Build Pipeline
+echo   Slaoq's Sniper - Build Pipeline
+echo  ==========================================
+echo  Repo    : %REPO_URL%
+echo  Output  : %TARGET_EXE%
+echo  TempDir : %BUILD_DIR%
 echo  ==========================================
 echo.
 
-:: ── 1. Check Python ──────────────────────────────────────────────────────────
-echo [1/9] Checking Python...
+:: ---- STEP 1  Check Python -----------------------------------
+echo [1/11] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 (
+    echo.
     echo  [ERROR] Python not found in PATH.
-    echo  Please install Python %PYTHON_MIN%+ from https://python.org
-    pause
-    exit /b 1
+    echo  Install Python 3.10+ from https://python.org
+    echo  Tick "Add Python to PATH" during install.
+    echo.
+    pause & exit /b 1
 )
-for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
-echo  Python %PY_VER% found.
+for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set "PY_VER=%%v"
+echo  OK  Python %PY_VER%
 
-:: ── 2. Check Git ─────────────────────────────────────────────────────────────
-echo [2/9] Checking Git...
+:: ---- STEP 2  Check Git --------------------------------------
+echo [2/11] Checking Git...
 git --version >nul 2>&1
 if errorlevel 1 (
+    echo.
     echo  [ERROR] Git not found in PATH.
-    echo  Please install Git from https://git-scm.com
-    pause
-    exit /b 1
+    echo  Install Git from https://git-scm.com and rerun.
+    echo.
+    pause & exit /b 1
 )
-echo  Git found.
+for /f "tokens=3 delims= " %%v in ('git --version 2^>^&1') do set "GIT_VER=%%v"
+echo  OK  Git %GIT_VER%
 
-:: ── 3. Create temp build directory ───────────────────────────────────────────
-echo [3/9] Cloning repository...
-set BUILD_DIR=%TEMP%\SnipeBuild_%RANDOM%%RANDOM%
-git clone --depth=1 "%REPO_URL%" "%BUILD_DIR%" 2>nul
+:: ---- STEP 3  Check network ----------------------------------
+echo [3/11] Checking network...
+ping -n 1 github.com >nul 2>&1
 if errorlevel 1 (
-    echo  [ERROR] Failed to clone repository.
-    echo  Check your internet connection and that REPO_URL is correct:
-    echo  %REPO_URL%
-    pause
-    exit /b 1
+    echo  [WARN] ping github.com failed (firewall may block ICMP). Continuing...
+) else (
+    echo  OK  github.com reachable
 )
-echo  Cloned into %BUILD_DIR%
 
-:: ── 4. Get current commit SHA (7 chars) ──────────────────────────────────────
+:: ---- STEP 4  Prepare temp directory ------------------------
+echo [4/11] Preparing build directory...
+if exist "%BUILD_DIR%" (
+    echo  Removing old build dir...
+    rmdir /s /q "%BUILD_DIR%"
+    if exist "%BUILD_DIR%" (
+        echo  [ERROR] Could not delete %BUILD_DIR%
+        echo  Close any Explorer windows pointing there and retry.
+        pause & exit /b 1
+    )
+)
+mkdir "%BUILD_DIR%"
+echo  OK  %BUILD_DIR% ready
+
+:: ---- STEP 5  Clone repository (NO output suppression) ------
+echo [5/11] Cloning repository...
+echo  Running: git clone --depth=1 %REPO_URL% "%BUILD_DIR%"
+echo.
+
+git clone --depth=1 "%REPO_URL%" "%BUILD_DIR%"
+set "GIT_EXITCODE=%errorlevel%"
+
+echo.
+if %GIT_EXITCODE% neq 0 (
+    echo  ============================================================
+    echo  [ERROR] git clone FAILED  ^(exit code %GIT_EXITCODE%^)
+    echo  ============================================================
+    echo.
+    echo  Common fixes:
+    echo.
+    echo  1. Wrong URL - current value in this script:
+    echo     %REPO_URL%
+    echo     Edit the REPO_URL line at the top of build.bat if needed.
+    echo.
+    echo  2. Private repo - add a Personal Access Token:
+    echo     https://TOKEN@github.com/user/repo.git
+    echo.
+    echo  3. GitHub auth - run this once in a terminal to cache credentials:
+    echo     git clone %REPO_URL% "%TEMP%\test_clone"
+    echo     Accept the login prompt, then delete %TEMP%\test_clone
+    echo.
+    echo  4. TLS issues - try running:
+    echo     git config --global http.sslVerify false
+    echo.
+    echo  5. Antivirus - temporarily disable real-time protection.
+    echo  ============================================================
+    pause & exit /b 1
+)
+echo  OK  Cloned
+
+:: ---- STEP 6  Stamp commit SHA --------------------------------
+echo [6/11] Stamping build info...
 cd /d "%BUILD_DIR%"
-for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set COMMIT_SHA=%%h
+
+set "COMMIT_SHA=unknown"
+for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set "COMMIT_SHA=%%h"
 echo  Commit: %COMMIT_SHA%
 
-:: Stamp the commit SHA into main.py so the auto-updater knows what was built
-echo  Stamping commit SHA into main.py...
+:: Insert _BUILT_SHA into the AutoUpdater class in main.py
 powershell -NoProfile -Command ^
-    "(Get-Content main.py -Raw) -replace 'class AutoUpdater\(QObject\):', ^
-    'class AutoUpdater(QObject):\n    _BUILT_SHA = \"%COMMIT_SHA%\"' ^
-    | Set-Content main.py -NoNewline" >nul 2>&1
+  "$file = 'main.py';" ^
+  "$txt  = Get-Content $file -Raw -Encoding UTF8;" ^
+  "$mark = 'class AutoUpdater(QObject):';" ^
+  "$repl = 'class AutoUpdater(QObject):`r`n    _BUILT_SHA = \"%COMMIT_SHA%\"';" ^
+  "if ($txt -notmatch '_BUILT_SHA') { $txt = $txt -replace [regex]::Escape($mark), $repl };" ^
+  "Set-Content $file $txt -Encoding UTF8 -NoNewline;" ^
+  "Write-Host '  SHA stamped OK'"
+if errorlevel 1 echo  [WARN] SHA stamp failed - build continues anyway
 
-:: ── 5. Install dependencies ───────────────────────────────────────────────────
-echo [4/9] Installing dependencies...
-python -m pip install --upgrade pip --quiet
-python -m pip install pyinstaller PySide6 psutil keyboard aiohttp --quiet
+:: ---- STEP 7  Install dependencies ---------------------------
+echo [7/11] Installing Python dependencies...
+python -m pip install --upgrade pip --quiet --disable-pip-version-check
+python -m pip install pyinstaller PySide6 psutil keyboard aiohttp ^
+    --quiet --disable-pip-version-check
 if errorlevel 1 (
-    echo  [ERROR] pip install failed.
-    pause
-    exit /b 1
+    echo.
+    echo  [ERROR] pip install failed. Try manually:
+    echo    pip install pyinstaller PySide6 psutil keyboard aiohttp
+    echo.
+    pause & exit /b 1
 )
-echo  Dependencies installed.
+echo  OK  Dependencies installed
 
-:: ── 6. Run PyInstaller ────────────────────────────────────────────────────────
-echo [5/9] Building executable...
+:: ---- STEP 8  PyInstaller build ------------------------------
+echo [8/11] Building .exe with PyInstaller (this takes 1-3 min)...
+echo.
 
-:: Determine icon path
-set ICON_OPT=
-if exist "assets\app.ico" set ICON_OPT=--icon=assets\app.ico
+set "ICON_OPT="
+if exist "assets\app.ico" set "ICON_OPT=--icon=assets\app.ico"
 
 pyinstaller ^
     --onefile ^
@@ -119,108 +185,104 @@ pyinstaller ^
     --name "%EXE_NAME%" ^
     --add-data "sniper_engine.py;." ^
     %ICON_OPT% ^
+    --noconfirm ^
+    --clean ^
     main.py
 
+echo.
 if errorlevel 1 (
-    echo  [ERROR] PyInstaller build failed.
-    pause
-    exit /b 1
+    echo  [ERROR] PyInstaller failed. Read the output above for details.
+    pause & exit /b 1
 )
-
 if not exist "dist\%EXE_NAME%.exe" (
-    echo  [ERROR] Build succeeded but .exe not found in dist\.
-    pause
-    exit /b 1
+    echo  [ERROR] dist\%EXE_NAME%.exe not found after build.
+    pause & exit /b 1
 )
-echo  Build complete: dist\%EXE_NAME%.exe
+echo  OK  dist\%EXE_NAME%.exe created
 
-:: ── 7. Copy .exe to destination ───────────────────────────────────────────────
-echo [6/9] Deploying executable...
+:: ---- STEP 9  Copy .exe to destination ----------------------
+echo [9/11] Deploying executable...
 
 if "%UPDATE_MODE%"=="1" (
-    :: In update mode: wait a moment for the old process to fully exit,
-    :: then replace it in-place.
-    echo  [UPDATE] Waiting for old process to exit...
+    echo  Waiting 3s for old process to release file lock...
     timeout /t 3 /nobreak >nul
-
-    :: Keep retrying the copy until the file is unlocked (max 15s)
-    set RETRY=0
-    :copy_loop
+    set "RETRY=0"
+    :copy_retry
         copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
-        if not errorlevel 1 goto copy_done
+        if not errorlevel 1 goto copy_ok
         set /a RETRY+=1
-        if !RETRY! geq 15 (
-            echo  [ERROR] Could not replace running .exe after 15 attempts.
-            pause
-            exit /b 1
+        if !RETRY! geq 20 (
+            echo  [ERROR] Could not replace %TARGET_EXE% after 20 attempts.
+            pause & exit /b 1
         )
+        echo  File locked, retrying !RETRY!/20...
         timeout /t 1 /nobreak >nul
-        goto copy_loop
-    :copy_done
-    echo  Replaced: %TARGET_EXE%
+        goto copy_retry
+    :copy_ok
+    echo  OK  Replaced: %TARGET_EXE%
 ) else (
-    :: Fresh install: copy to script directory
-    copy /Y "dist\%EXE_NAME%.exe" "%SCRIPT_DIR%%EXE_NAME%.exe" >nul
-    echo  Copied to: %SCRIPT_DIR%%EXE_NAME%.exe
-    set TARGET_EXE=%SCRIPT_DIR%%EXE_NAME%.exe
+    copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul
+    if errorlevel 1 (
+        echo  [ERROR] Copy to %TARGET_EXE% failed.
+        pause & exit /b 1
+    )
+    echo  OK  Copied to: %TARGET_EXE%
 )
 
-:: ── 8. Create folder structure in destination dir ────────────────────────────
-echo [7/9] Setting up folder structure...
-set DEST_DIR=%~dp0%TARGET_EXE%
-:: Resolve destination folder from exe path
-for %%i in ("%TARGET_EXE%") do set DEST_DIR=%%~dpi
+for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
-if not exist "%DEST_DIR%plugins"  mkdir "%DEST_DIR%plugins"
-if not exist "%DEST_DIR%assets"   mkdir "%DEST_DIR%assets"
-echo  Created: plugins\  assets\
+:: ---- STEP 10  Folders + assets + plugins -------------------
+echo [10/11] Setting up folders and assets...
 
-:: ── 9. Download assets ────────────────────────────────────────────────────────
-echo [8/9] Checking assets...
-set LOGO=%DEST_DIR%assets\logo.png
+if not exist "%DEST_DIR%plugins" mkdir "%DEST_DIR%plugins"
+if not exist "%DEST_DIR%assets"  mkdir "%DEST_DIR%assets"
+echo  OK  plugins\  assets\  created
 
-if not exist "%LOGO%" (
+:: Download logo.png
+if not exist "%DEST_DIR%assets\logo.png" (
     echo  Downloading logo.png...
     powershell -NoProfile -Command ^
-        "Invoke-WebRequest -Uri 'https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png' -OutFile '%LOGO%' -UseBasicParsing" >nul 2>&1
-    if exist "%LOGO%" (echo  logo.png downloaded.) else (echo  Warning: logo.png download failed.)
+      "try { Invoke-WebRequest -Uri '%LOGO_URL%' -OutFile '%DEST_DIR%assets\logo.png' -UseBasicParsing; Write-Host '  OK  logo.png saved' } catch { Write-Host '  [WARN] logo.png download failed:' $_.Exception.Message }"
 ) else (
-    echo  logo.png already present.
+    echo  OK  logo.png already present
 )
 
-:: Copy example plugin if it doesn't exist yet
+:: Copy example plugin
 if not exist "%DEST_DIR%plugins\example_plugin.py" (
-    if exist "plugins\example_plugin.py" (
-        copy "plugins\example_plugin.py" "%DEST_DIR%plugins\example_plugin.py" >nul
-        echo  Copied example_plugin.py to plugins\
+    if exist "%BUILD_DIR%\plugins\example_plugin.py" (
+        copy "%BUILD_DIR%\plugins\example_plugin.py" ^
+             "%DEST_DIR%plugins\example_plugin.py" >nul
+        echo  OK  example_plugin.py copied
     )
 )
 
-:: ── 10. Clean up temp folder ──────────────────────────────────────────────────
-echo [9/9] Cleaning up temp files...
+:: ---- STEP 11  Cleanup --------------------------------------
+echo [11/11] Cleaning up temp files...
 cd /d "%SCRIPT_DIR%"
-rmdir /s /q "%BUILD_DIR%"
-echo  Removed: %BUILD_DIR%
+rmdir /s /q "%BUILD_DIR%" >nul 2>&1
+if exist "%BUILD_DIR%" (
+    echo  [WARN] Temp dir not fully removed: %BUILD_DIR%
+) else (
+    echo  OK  Temp folder removed
+)
 
+:: ---- DONE --------------------------------------------------
 echo.
 echo  ==========================================
-echo   Build complete!
+echo   Build COMPLETE
 echo   Executable : %TARGET_EXE%
-echo   Commit SHA : %COMMIT_SHA%
+echo   Commit     : %COMMIT_SHA%
 echo  ==========================================
 echo.
 
-:: ── 11. Restart (update mode only) ───────────────────────────────────────────
 if "%UPDATE_MODE%"=="1" (
     echo  Restarting %EXE_NAME%...
     timeout /t 1 /nobreak >nul
     start "" "%TARGET_EXE%"
-    echo  Done.
     exit /b 0
 )
 
-:: In fresh-build mode: offer to run immediately
-echo  Press any key to launch %EXE_NAME%, or close this window.
+echo  Press any key to launch %EXE_NAME%...
 pause >nul
 start "" "%TARGET_EXE%"
 exit /b 0
