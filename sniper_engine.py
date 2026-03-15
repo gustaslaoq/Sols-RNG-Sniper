@@ -428,7 +428,28 @@ class ProcessManager:
         return False
 
     @staticmethod
-    def open_roblox_link(uri: str):
+    def is_in_game() -> bool:
+        if not ProcessManager.is_roblox_running():
+            return False
+        if not ROBLOX_LOG_PATH.exists():
+            return False
+        try:
+            logs = list(ROBLOX_LOG_PATH.glob("*.log"))
+            if not logs:
+                return False
+            most_recent = max(logs, key=lambda p: p.stat().st_mtime)
+            age = time.time() - most_recent.stat().st_mtime
+            if age > 90:
+                return False
+            text = most_recent.read_bytes()[-8192:].decode("utf-8", errors="ignore")
+            in_game_markers = [
+                "placeId=", "GameInstanceId=", "game.PlaceId",
+                "[FLog::GameJoinUtil]", "[FLog::SingleSurfaceApp]",
+                "Joining game", "PerformanceStatsReporter",
+            ]
+            return any(m in text for m in in_game_markers)
+        except Exception:
+            return False
         try:
             system = platform.system()
             if system == "Windows":
@@ -481,14 +502,10 @@ class RobloxLogReader:
         self._read_buf:       dict[Path, str]  = {}
 
     def mark_launch(self):
-        """Call immediately before opening the Roblox URI."""
         self._launch_time  = time.time()
         self._session_log  = None
-        # Reset incremental state for the new session
         self._seek_pos.clear()
         self._read_buf.clear()
-        ProcessManager.kill_roblox()
-        time.sleep(0.5)
 
     def reset_session(self):
         self._launch_time  = 0.0
@@ -1289,10 +1306,31 @@ class SniperEngine:
             if self.config.auto_join_delay_ms:
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
 
-            self._log_reader.mark_launch()
-            ProcessManager.open_roblox_link(uri)
+            roblox_running = ProcessManager.is_roblox_running()
+            in_game        = ProcessManager.is_in_game() if roblox_running else False
 
-            # Post-join biome verification (non-blocking)
+            if roblox_running and in_game:
+                self._log(LogLevel.INFO,
+                    "[JOIN] Roblox is in a game — killing to avoid auto-rejoin conflict…")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, lambda: ProcessManager.kill_roblox_and_wait(timeout=5.0))
+                await asyncio.sleep(0.4)
+                self._log_reader.mark_launch()
+                ProcessManager.open_roblox_link(uri)
+                self._log(LogLevel.INFO, "[JOIN] Relaunched after kill — joining server…")
+
+            elif roblox_running and not in_game:
+                self._log(LogLevel.INFO,
+                    "[JOIN] Roblox is on home page — opening link directly (no kill needed)…")
+                self._log_reader.mark_launch()
+                ProcessManager.open_roblox_link(uri)
+
+            else:
+                self._log(LogLevel.INFO, "[JOIN] Roblox not running — launching…")
+                self._log_reader.mark_launch()
+                ProcessManager.open_roblox_link(uri)
+
             if profile.verify_biome_name and self.config.anti_bait_enabled:
                 asyncio.create_task(self._verify_biome(profile, uri))
 
