@@ -1083,7 +1083,7 @@ def create_taskbar_icon() -> QIcon:
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
     radius = sz * 0.22
     pt.setBrush(QColor("#000000"))
-    pt.setPen(Qt.PenStyle.NoPen)
+    pt.setPen(QPen(QColor("#ffffff"), sz * 0.012))
     pt.drawRoundedRect(QRect(0, 0, sz, sz), radius, radius)
     ox = (sz - logo_s.width())  // 2
     oy = (sz - logo_s.height()) // 2
@@ -2582,7 +2582,8 @@ class ProfileEditor(QWidget):
 # PAGE: SETTINGS
 
 class SettingsPage(QWidget):
-    config_saved = Signal(object)
+    config_saved    = Signal(object)
+    _ch_fetch_done  = Signal(str, str, str)
 
     def __init__(self, cfg: SniperConfig, dev: bool = False):
         super().__init__()
@@ -2591,6 +2592,7 @@ class SettingsPage(QWidget):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(700)
         self._autosave_timer.timeout.connect(self._save)
+        self._ch_fetch_done.connect(self._finish_add_ch)
         self._build()
         self._connect_autosave()
 
@@ -2653,12 +2655,12 @@ class SettingsPage(QWidget):
 
     def _sec_channels(self) -> QFrame:
         c, lay = self._card("Monitored Channels")
-        lay.addWidget(lbl("Channels where the bot listens.", "FieldHint"))
-        row = QHBoxLayout()
+        lay.addWidget(lbl("Channels where the bot listens for snipe links.", "FieldHint"))
+        row = QHBoxLayout(); row.setSpacing(8)
 
         g_v = QVBoxLayout(); g_h = QHBoxLayout()
-        g_h.addWidget(lbl("Guild ID", "FieldLbl"))
-        g_h.addWidget(HelpIcon("Right-click server icon → Copy ID (Developer Mode required)."))
+        g_h.addWidget(lbl("Server ID", "FieldLbl"))
+        g_h.addWidget(HelpIcon("Right-click server icon → Copy ID\n(Enable Developer Mode in Discord settings)."))
         g_h.addStretch(); g_v.addLayout(g_h)
         self._cg = QLineEdit(); self._cg.setPlaceholderText("123456789…")
         g_v.addWidget(self._cg); row.addLayout(g_v)
@@ -2670,15 +2672,15 @@ class SettingsPage(QWidget):
         self._cc = QLineEdit(); self._cc.setPlaceholderText("987654321…")
         c_v.addWidget(self._cc); row.addLayout(c_v)
 
-        n_v = QVBoxLayout()
-        n_v.addWidget(lbl("Name (Optional)", "FieldLbl"))
-        self._cn = QLineEdit(); self._cn.setPlaceholderText("Snipe Server 1")
-        n_v.addWidget(self._cn); row.addLayout(n_v)
         lay.addLayout(row)
 
         ab = QPushButton("+ Add Channel"); ab.setObjectName("SmallBtn")
         ab.clicked.connect(self._add_ch)
         lay.addWidget(ab, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self._add_ch_status = QLabel("")
+        self._add_ch_status.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
+        lay.addWidget(self._add_ch_status)
 
         self._ch_container_widget = QWidget()
         self._ch_container_widget.setStyleSheet(
@@ -2889,13 +2891,61 @@ class SettingsPage(QWidget):
             self._save_lbl.setStyleSheet(f"color: {C['green2']}; font-size: 10px; padding-right: 4px;")
 
     def _add_ch(self):
-        g  = self._cg.text().strip(); ch = self._cc.text().strip()
-        n  = self._cn.text().strip() or "Unnamed"
-        if g and ch:
-            self._cfg.monitored_channels.append(ChannelConfig(g, ch, n))
-            self._refresh_ch()
-            for w in (self._cg, self._cc, self._cn): w.clear()
-            self._schedule_save()
+        g  = self._cg.text().strip()
+        ch = self._cc.text().strip()
+        if not g or not ch:
+            self._add_ch_status.setStyleSheet(f"color: {C['red2']}; font-size: 10px;")
+            self._add_ch_status.setText("Both Server ID and Channel ID are required.")
+            return
+        token = self._tok.text().strip() or self._cfg.token
+        self._add_ch_status.setStyleSheet(f"color: {C['yellow']}; font-size: 10px;")
+        self._add_ch_status.setText("Fetching channel info…")
+
+        _sig = self._ch_fetch_done
+
+        def _fetch():
+            guild_name   = g
+            channel_name = ch
+            category     = ""
+            try:
+                import urllib.request as _ur
+                headers = {"Authorization": token, "User-Agent": "SniperApp/1.0"}
+
+                def _get(url):
+                    req = _ur.Request(url, headers=headers)
+                    with _ur.urlopen(req, timeout=6) as r:
+                        return json.loads(r.read())
+
+                gdata      = _get(f"https://discord.com/api/v10/guilds/{g}")
+                guild_name = gdata.get("name", g)
+
+                channels = _get(f"https://discord.com/api/v10/guilds/{g}/channels")
+                cats     = {str(c["id"]): c["name"] for c in channels if c.get("type") == 4}
+                for c in channels:
+                    if str(c.get("id")) == ch:
+                        channel_name = c.get("name", ch)
+                        parent_id    = str(c.get("parent_id") or "")
+                        category     = cats.get(parent_id, "")
+                        break
+            except Exception:
+                pass
+
+            if category:
+                display = f"{guild_name}  ›  {category} / #{channel_name}"
+            else:
+                display = f"{guild_name}  ›  #{channel_name}"
+            _sig.emit(g, ch, display)
+
+        threading.Thread(target=_fetch, daemon=True, name="ChFetch").start()
+
+    def _finish_add_ch(self, guild_id: str, channel_id: str, display: str):
+        ch_cfg = ChannelConfig(guild_id=guild_id, channel_id=channel_id, name=display)
+        self._cfg.monitored_channels.append(ch_cfg)
+        self._refresh_ch()
+        self._cg.clear(); self._cc.clear()
+        self._add_ch_status.setStyleSheet(f"color: {C['green2']}; font-size: 10px;")
+        self._add_ch_status.setText(f"Added: {display}")
+        self._schedule_save()
 
     def _del_ch_at(self, idx: int):
         if 0 <= idx < len(self._cfg.monitored_channels):
