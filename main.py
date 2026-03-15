@@ -2475,6 +2475,8 @@ class ProfileEditor(QWidget):
         self._chk_enabled.toggled.connect(self._on_enabled)
         fl.addWidget(self._chk_enabled)
 
+        self._biome_section = QWidget()
+        bs_lay = QVBoxLayout(self._biome_section); bs_lay.setContentsMargins(0, 0, 0, 0); bs_lay.setSpacing(6)
         biome_hdr = QHBoxLayout()
         self._lbl_biome = lbl("Expected Biome Name:", "FieldLbl")
         biome_hdr.addWidget(self._lbl_biome)
@@ -2482,13 +2484,11 @@ class ProfileEditor(QWidget):
             "Exact biome name (e.g., GLITCHED).\n"
             "Leave empty for items/events with no biome check."))
         biome_hdr.addStretch()
-        fl.addLayout(biome_hdr)
-
+        bs_lay.addLayout(biome_hdr)
         self._inp_biome = QLineEdit()
         self._inp_biome.setPlaceholderText("Leave empty for Items/Merchant")
         self._inp_biome.textChanged.connect(self._on_biome)
-        fl.addWidget(self._inp_biome)
-
+        bs_lay.addWidget(self._inp_biome)
         kill_row = QHBoxLayout()
         zap_lbl  = QLabel()
         zap_lbl.setPixmap(_svg_icon("zap", C["yellow"], 13).pixmap(13, 13))
@@ -2496,15 +2496,17 @@ class ProfileEditor(QWidget):
         self._lbl_kill_note = lbl("Auto-kill Roblox on wrong biome", "FieldHint")
         kill_row.addWidget(zap_lbl); kill_row.addWidget(self._lbl_kill_note); kill_row.addStretch()
         self._lbl_kill_auto = QWidget(); self._lbl_kill_auto.setLayout(kill_row)
-        fl.addWidget(self._lbl_kill_auto)
+        bs_lay.addWidget(self._lbl_kill_auto)
+        fl.addWidget(self._biome_section)
 
-        rx_hdr = QHBoxLayout()
+        self._rx_section = QWidget()
+        rx_lay = QHBoxLayout(self._rx_section); rx_lay.setContentsMargins(0, 0, 0, 0)
         self._chk_rx = QCheckBox("Use Regex")
         self._chk_rx.toggled.connect(self._on_regex)
-        rx_hdr.addWidget(self._chk_rx)
-        rx_hdr.addWidget(HelpIcon("Enable for advanced patterns (e.g., multiple biomes)."))
-        rx_hdr.addStretch()
-        fl.addLayout(rx_hdr)
+        rx_lay.addWidget(self._chk_rx)
+        rx_lay.addWidget(HelpIcon("Enable for advanced patterns (e.g., multiple biomes)."))
+        rx_lay.addStretch()
+        fl.addWidget(self._rx_section)
 
         fl.addWidget(hdiv())
 
@@ -2578,8 +2580,7 @@ class ProfileEditor(QWidget):
         for w in (self._chk_enabled, self._chk_rx, self._inp_biome):
             w.blockSignals(False)
 
-        for w in (self._lbl_biome, self._inp_biome, self._lbl_kill_auto,
-                  self._chk_rx, self._trigger_group):
+        for w in (self._biome_section, self._rx_section, self._trigger_group):
             w.setVisible(not is_global)
 
         self._wl.clear()
