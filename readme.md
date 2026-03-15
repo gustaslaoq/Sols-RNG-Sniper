@@ -12,7 +12,7 @@ Monitors Discord channels in real time and joins verified server links instantly
 [![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org/downloads)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?style=flat-square&logo=windows&logoColor=white)](#)
 [![License](https://img.shields.io/github/license/gustaslaoq/Sols-RNG-Sniper?style=flat-square)](LICENSE)
-[![Download](https://img.shields.io/badge/Download-build.bat-00c853?style=flat-square&logo=github)](https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/build.bat)
+[![Download](https://img.shields.io/badge/Download-build.bat-00c853?style=flat-square&logo=github)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases/latest/download/build.bat)
 
 </div>
 
@@ -88,7 +88,7 @@ Everything else the app needs (PySide6, PyInstaller, aiohttp, psutil, etc.) is d
 
 You only need one file: `build.bat`.
 
-1. Download `build.bat` by clicking the **Download** badge above, or [right-click here and save as](https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/build.bat)
+1. Download `build.bat` by clicking the **Download** badge above, or [direct download link](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases/latest/download/build.bat)
 2. Save it anywhere — Desktop, Downloads folder, wherever you prefer
 3. Double-click `build.bat`
 4. A console window opens and runs through 9 steps — this takes about 3–5 minutes
