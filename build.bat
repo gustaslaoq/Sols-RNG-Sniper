@@ -128,6 +128,13 @@ if not exist "%DEST_DIR%assets"   mkdir "%DEST_DIR%assets"
 if exist "%BUILD_DIR%\assets\logo.png" copy /Y "%BUILD_DIR%\assets\logo.png" "%DEST_DIR%assets\logo.png" >nul
 if exist "%BUILD_DIR%\assets\app.ico"  copy /Y "%BUILD_DIR%\assets\app.ico"  "%DEST_DIR%assets\app.ico"  >nul
 
+if not exist "%DEST_DIR%plugins\example_plugin.py" (
+    if exist "%BUILD_DIR%\plugins\example_plugin.py" (
+        copy /Y "%BUILD_DIR%\plugins\example_plugin.py" "%DEST_DIR%plugins\example_plugin.py" >nul
+        echo  Copied example_plugin.py
+    )
+)
+
 echo %COMMIT_SHA%> "%DEST_DIR%version.txt"
 echo  Wrote version.txt: %COMMIT_SHA%
 
