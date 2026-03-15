@@ -20,6 +20,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections import deque, OrderedDict
 from dataclasses import dataclass, field, asdict
@@ -243,6 +244,8 @@ def _default_global_profile() -> SnipeProfile:
 
 def _default_profiles() -> list:
     profiles = [_default_global_profile()]
+
+    # ── Active biome profiles ─────────────────────────────────────────────
     for name, biome, triggers in [
         ("Glitched",   "GLITCHED",   ["glitch", "glitched"]),
         ("Dreamspace", "DREAMSPACE", ["dreamspace", "dream"]),
@@ -255,6 +258,21 @@ def _default_profiles() -> list:
         )
         p.compile()
         profiles.append(p)
+
+    # ── Merchant item profiles (disabled by default) ──────────────────────
+    for name, biome, triggers in [
+        ("Void Coin",  "",  ["void", "vc"]),
+        ("Jester",     "",  ["jester", "js", "obl", "oblivion", "heavenly", "hp", "obliv"]),
+        ("Rin",        "",  ["rin"]),
+    ]:
+        p = SnipeProfile(
+            name=name, enabled=False, locked=False,
+            trigger_keywords=triggers, blacklist_keywords=[],
+            verify_biome_name=biome, kill_on_wrong_biome=False,
+        )
+        p.compile()
+        profiles.append(p)
+
     return profiles
 
 
@@ -304,6 +322,14 @@ class SniperConfig:
     cooldown_guild_ttl:      float         = 30.0
     cooldown_profile_ttl:    float         = 0.0
     cooldown_link_ttl:       float         = 10.0
+    # Sound alert
+    sound_alert_enabled:     bool          = False
+    sound_alert_freq:        int           = 1000
+    sound_alert_dur_ms:      int           = 200
+    # Delete-watch auto-blacklist (0 = disabled)
+    delete_watch_seconds:    int           = 0
+    # Extra Discord tokens (optional, listen-only secondary accounts)
+    extra_tokens:            list          = field(default_factory=list)
     # Internal — not serialised
     config_path:             str           = field(default="", repr=False, compare=False)
 
@@ -343,6 +369,11 @@ class SniperConfig:
                 "profile_ttl": self.cooldown_profile_ttl,
                 "link_ttl":    self.cooldown_link_ttl,
             },
+            "sound_alert_enabled":  self.sound_alert_enabled,
+            "sound_alert_freq":     self.sound_alert_freq,
+            "sound_alert_dur_ms":   self.sound_alert_dur_ms,
+            "delete_watch_seconds": self.delete_watch_seconds,
+            "extra_tokens":         self.extra_tokens,
         }
         with open(self.config_path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -370,6 +401,7 @@ class SniperConfig:
                 cfg.cooldown_guild_ttl   = cooldown_raw.get("guild_ttl",   30.0)
                 cfg.cooldown_profile_ttl = cooldown_raw.get("profile_ttl",  0.0)
                 cfg.cooldown_link_ttl    = cooldown_raw.get("link_ttl",    10.0)
+            cfg.extra_tokens         = raw.get("extra_tokens", [])
             cfg.ensure_global()
             return cfg
         except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError):
@@ -788,12 +820,14 @@ class ProfileFilter:
 
 class DiscordGateway:
     def __init__(self, token: str, on_message: Callable, on_log: Callable,
-                 on_status: Callable, config: SniperConfig):
+                 on_status: Callable, config: SniperConfig,
+                 on_message_delete: Callable = None):
         self.token      = token
         self.on_message = on_message
         self.on_log     = on_log
         self.on_status  = on_status
         self.config     = config
+        self.on_message_delete = on_message_delete
 
         self._ws:             Optional[aiohttp.ClientWebSocketResponse] = None
         self._session:        Optional[aiohttp.ClientSession]           = None
@@ -885,6 +919,11 @@ class DiscordGateway:
                 self.on_log(LogEntry(LogLevel.SUCCESS, f"Connected as: {u.get('username', '?')}"))
             elif t == "MESSAGE_CREATE":
                 asyncio.create_task(self._on_message(d))
+            elif t == "MESSAGE_UPDATE":
+                # Some bots edit messages to add the link after posting
+                asyncio.create_task(self._on_message(d, is_update=True))
+            elif t == "MESSAGE_DELETE":
+                asyncio.create_task(self._on_message_delete(d))
 
         elif op == 9:
             self.on_log(LogEntry(LogLevel.WARN, "Session invalidated. Reconnecting…"))
@@ -909,7 +948,7 @@ class DiscordGateway:
             except (aiohttp.ClientError, asyncio.CancelledError):
                 break
 
-    async def _on_message(self, data: dict):
+    async def _on_message(self, data: dict, is_update: bool = False):
         ch      = data.get("channel_id", "").strip()
         guild   = data.get("guild_id",   "").strip()
         msg_id  = data.get("id",         "").strip()
@@ -929,6 +968,19 @@ class DiscordGateway:
 
         full_content = f"{content} {' '.join(embed_parts)}".strip()
         astr         = author.get("username", "?")
+        author_id    = author.get("id", "").strip()
+        # Build avatar URL if available
+        avatar_hash  = author.get("avatar", "")
+        if author_id and avatar_hash:
+            author_avatar_url = (
+                f"https://cdn.discordapp.com/avatars/{author_id}/{avatar_hash}.png?size=128"
+            )
+        else:
+            author_avatar_url = ""
+        # Prefer display_name > global_name > username
+        author_display = (
+            author.get("display_name") or author.get("global_name") or astr
+        )
 
         monitored = any(
             c.channel_id == ch and c.enabled for c in self.config.monitored_channels)
@@ -937,9 +989,26 @@ class DiscordGateway:
             return
 
         self.on_log(LogEntry(LogLevel.DEBUG,
-            f"[MSG] #{ch} | {astr}: {content[:80]}", dev_only=True))
+            f"[MSG{'_UPDATE' if is_update else ''}] #{ch} | {astr}: {content[:80]}",
+            dev_only=True))
 
-        await self.on_message(guild, ch, msg_id, content, astr, full_content)
+        await self.on_message(
+            guild, ch, msg_id, content, astr, full_content,
+            author_id=author_id,
+            author_avatar_url=author_avatar_url,
+            author_display=author_display,
+        )
+
+    async def _on_message_delete(self, data: dict):
+        ch      = data.get("channel_id", "").strip()
+        msg_id  = data.get("id",         "").strip()
+        guild   = data.get("guild_id",   "").strip()
+        monitored = any(
+            c.channel_id == ch and c.enabled for c in self.config.monitored_channels)
+        if not monitored:
+            return
+        if self.on_message_delete:
+            await self.on_message_delete(guild, ch, msg_id)
 
     async def disconnect(self):
         self._running = False
@@ -1001,6 +1070,9 @@ class SniperEngine:
         # ── server-URI dedup  {uri: expiry_monotonic} ─────────────────────
         self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
 
+        # ── deleted message IDs observed from MESSAGE_DELETE ──────────────
+        self._deleted_msg_ids: set = set()
+
         # ── injected subsystems ───────────────────────────────────────────
         self.blacklist = blacklist   # Optional BlacklistManager
         self.cooldown  = cooldown    # Optional CooldownManager
@@ -1012,12 +1084,13 @@ class SniperEngine:
             self._setup_file_logger()
 
         # Callbacks set by the Bridge
-        self.on_log:          Callable = lambda e: None
-        self.on_status:       Callable = lambda s: None
-        self.on_snipe:        Callable = lambda data: None
-        self.on_biome:        Callable = lambda exp, det, ok: None
-        self.on_ping_update:  Callable = lambda p: None
-        self.on_paused:       Callable = lambda v: None
+        self.on_log:              Callable = lambda e: None
+        self.on_status:           Callable = lambda s: None
+        self.on_snipe:            Callable = lambda data: None
+        self.on_biome:            Callable = lambda exp, det, ok: None
+        self.on_ping_update:      Callable = lambda p: None
+        self.on_paused:           Callable = lambda v: None
+        self.on_delete_blacklist: Callable = lambda uid, name: None
 
     # ── properties ────────────────────────────────────────────────────────────
 
@@ -1186,8 +1259,33 @@ class SniperEngine:
             on_log=self.on_log,
             on_status=self._set_status,
             config=self.config,
+            on_message_delete=self._on_discord_message_delete,
         )
+
+        # Extra tokens — each runs a secondary gateway in listen-only mode
+        extra_tokens = getattr(self.config, "extra_tokens", [])
+        for tok in extra_tokens:
+            if tok and tok != self.config.token:
+                t = asyncio.create_task(
+                    self._run_extra_gateway(tok), name=f"gateway_extra_{tok[:6]}")
+                self._tasks.append(t)
+                t.add_done_callback(
+                    lambda x: self._tasks.remove(x) if x in self._tasks else None)
+
         await self._gateway.connect()
+
+    async def _run_extra_gateway(self, token: str):
+        """Secondary gateway — receive messages only, no status updates."""
+        gw = DiscordGateway(
+            token=token,
+            on_message=self._on_discord_message,
+            on_log=self.on_log,
+            on_status=lambda s: None,   # suppress status updates from secondaries
+            config=self.config,
+            on_message_delete=self._on_discord_message_delete,
+        )
+        self._log(LogLevel.INFO, f"[ENGINE] Extra token connected: {token[:10]}…")
+        await gw.connect()
 
     async def _ping_updater(self):
         while self._running:
@@ -1203,7 +1301,7 @@ class SniperEngine:
                 self.cooldown.purge_expired()
 
     async def _log_monitor_loop(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while self._running:
             await asyncio.sleep(1)
             if not ProcessManager.is_roblox_running():
@@ -1219,7 +1317,9 @@ class SniperEngine:
     # ── message handler ───────────────────────────────────────────────────────
 
     async def _on_discord_message(self, guild_id: str, channel_id: str,
-                                  msg_id: str, content: str, author: str, full: str):
+                                  msg_id: str, content: str, author: str, full: str,
+                                  author_id: str = "", author_avatar_url: str = "",
+                                  author_display: str = ""):
         if self._paused:
             return
 
@@ -1234,7 +1334,7 @@ class SniperEngine:
         if msg_id:
             self._seen_msg_ids.append(msg_id)
 
-        author_id = ""
+        # ── Bug 1 fix: use the real author_id from gateway ────────────────────
         if self.blacklist and author_id and self.blacklist.is_blacklisted(author_id):
             entry = self.blacklist.get_entry(author_id)
             self._log(LogLevel.WARN,
@@ -1306,15 +1406,34 @@ class SniperEngine:
         self._snipe_count += 1
         self.metrics["snipes_successful"] += 1
 
+        # ── Detect which keyword triggered this snipe ─────────────────────────
+        keyword_hit = ""
+        if profile and profile._compiled_triggers:
+            clean_text = _strip_urls(full)
+            for pat in profile._compiled_triggers:
+                m = pat.search(clean_text)
+                if m:
+                    keyword_hit = m.group(0)
+                    break
+
         self._log(LogLevel.SNIPE,
             f"[SNIPER] Profile '{profile.name}' — {author}: {content[:80]}")
 
-        # ── 7. Build jump-to-message URL (populated in webhook payload) ───────
+        # ── Build jump-to-message URL ─────────────────────────────────────────
         jump_url = ""
         if guild_id and channel_id and msg_id:
             jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{msg_id}"
 
-        # ── 8. Optional auto-join — execute first for minimum latency ─────────
+        # ── Build the Roblox web URL (share link, not the raw uri scheme) ─────
+        if place_id and place_id != "0" and code:
+            roblox_web_url = (
+                f"https://www.roblox.com/games/{place_id}/"
+                f"?privateServerLinkCode={code}"
+            )
+        else:
+            roblox_web_url = uri   # fallback for share-link types
+
+        # ── Optional auto-join — execute first for minimum latency ───────────
         if self.config.auto_join_enabled:
             if self.config.auto_join_delay_ms:
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
@@ -1325,7 +1444,7 @@ class SniperEngine:
             if roblox_running and in_game:
                 self._log(LogLevel.INFO,
                     "[JOIN] Roblox is in a game — killing to avoid auto-rejoin conflict…")
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None, lambda: ProcessManager.kill_roblox_and_wait(timeout=5.0))
                 await asyncio.sleep(0.4)
@@ -1347,51 +1466,110 @@ class SniperEngine:
             if profile.verify_biome_name and self.config.anti_bait_enabled:
                 asyncio.create_task(self._verify_biome(profile, uri))
 
-        # ── 9. Build snipe data dict ──────────────────────────────────────────
+        # ── Sound alert ───────────────────────────────────────────────────────
+        if getattr(self.config, "sound_alert_enabled", False):
+            try:
+                import winsound
+                freq = getattr(self.config, "sound_alert_freq", 1000)
+                dur  = getattr(self.config, "sound_alert_dur_ms", 200)
+                threading.Thread(
+                    target=lambda: winsound.Beep(freq, dur),
+                    daemon=True, name="SoundAlert").start()
+            except Exception:
+                pass
+
+        # ── Build snipe data dict ─────────────────────────────────────────────
         snipe_data = {
-            "place_id":    place_id,
-            "code":        code,
-            "uri":         uri,
-            "profile":     profile.name,
-            "author":      author,
-            "raw_message": content[:1000],
-            "link":        uri,
-            "jump_url":    jump_url,
+            "place_id":          place_id,
+            "code":              code,
+            "uri":               uri,
+            "roblox_web_url":    roblox_web_url,
+            "profile":           profile.name,
+            "author":            author,
+            "author_id":         author_id,
+            "author_display":    author_display or author,
+            "author_avatar_url": author_avatar_url,
+            "keyword":           keyword_hit,
+            "raw_message":       content[:1000],
+            "link":              uri,
+            "jump_url":          jump_url,
+            "timestamp_iso":     datetime.now().isoformat(),
         }
 
-        # ── 10. Fire on_snipe callback ────────────────────────────────────────
+        # ── Fire on_snipe callback ────────────────────────────────────────────
         try:
             self.on_snipe(snipe_data)
         except Exception:
             pass
 
-        # ── 11. Broadcast to plugins ──────────────────────────────────────────
+        # ── Broadcast to plugins ──────────────────────────────────────────────
         if self._plugins:
             self._plugins.broadcast("on_snipe", snipe_data)
 
-        # ── 12. Pause-after-snipe ─────────────────────────────────────────────
+        # ── Delete-watch: observe if author deletes within watch window ───────
+        watch_s = getattr(self.config, "delete_watch_seconds", 0)
+        if watch_s > 0 and author_id and msg_id:
+            task = asyncio.create_task(
+                self._delete_watch(author_id, author_display or author,
+                                   msg_id, guild_id, channel_id, watch_s))
+            self._tasks.append(task)
+            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+
+        # ── Bug 5 fix: Pause-after-snipe as tracked cancellable task ─────────
         pause_s = self.config.pause_after_snipe_s
         if pause_s > 0:
-            self._paused = True
+            task = asyncio.create_task(self._pause_after_snipe(pause_s))
+            self._tasks.append(task)
+            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+
+    async def _pause_after_snipe(self, pause_s: int):
+        """Bug 5 fix: auto-pause runs as a tracked task so stop() can cancel it."""
+        self._paused = True
+        try:
+            self.on_paused(True)
+        except Exception:
+            pass
+        self._log(LogLevel.INFO, f"[ENGINE] Auto-paused for {pause_s}s after snipe…")
+        try:
+            await asyncio.sleep(pause_s)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._paused = False
+        if self._running:
             try:
-                self.on_paused(True)
+                self.on_paused(False)
             except Exception:
                 pass
-            self._log(LogLevel.INFO,
-                f"[ENGINE] Auto-paused for {pause_s}s after snipe…")
-            try:
-                await asyncio.sleep(pause_s)
-            finally:
-                self._paused = False
-            if self._running:
+            self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
+
+    async def _delete_watch(self, author_id: str, author_name: str,
+                            msg_id: str, guild_id: str, channel_id: str,
+                            watch_s: float):
+        """Watch for message deletion within watch_s seconds and auto-blacklist."""
+        deadline = time.monotonic() + watch_s
+        while time.monotonic() < deadline and self._running:
+            await asyncio.sleep(0.5)
+            if msg_id in self._deleted_msg_ids:
+                self._deleted_msg_ids.discard(msg_id)
+                if self.blacklist:
+                    self.blacklist.add(author_id, author_name, reason="message_deleted")
+                    self._log(LogLevel.WARN,
+                        f"[BLACKLIST] Auto-blacklisted {author_name} ({author_id})"
+                        f" — deleted snipe message within {watch_s:.0f}s")
                 try:
-                    self.on_paused(False)
+                    self.on_delete_blacklist(author_id, author_name)
                 except Exception:
                     pass
-                self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
+                return
+
+    async def _on_discord_message_delete(self, guild_id: str, channel_id: str, msg_id: str):
+        """Called by gateway when a MESSAGE_DELETE event fires in a monitored channel."""
+        if msg_id:
+            self._deleted_msg_ids.add(msg_id)
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
-        loop  = asyncio.get_event_loop()
+        loop  = asyncio.get_running_loop()
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(30.0))
 
@@ -1429,7 +1607,7 @@ class SniperEngine:
     async def _biome_watcher(self, expected_biome: str, action: str):
         self._log(LogLevel.INFO,
             f"[BIOME WATCHER] Monitoring for biome change from '{expected_biome}'…")
-        loop     = asyncio.get_event_loop()
+        loop     = asyncio.get_running_loop()
         interval = 3.0
         stable_count   = 0
         required_stable = 2
@@ -1476,6 +1654,7 @@ class SniperEngine:
                 "[BIOME WATCHER] Returning Roblox to home page — ready for next snipe…")
             ProcessManager.kill_roblox_and_wait(timeout=5.0)
             time.sleep(0.5)
+            self._log_reader.mark_launch()   # reset log reader so next snipe reads fresh log
             try:
                 if platform.system() == "Windows":
                     os.startfile("roblox://")
