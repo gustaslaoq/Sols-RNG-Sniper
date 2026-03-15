@@ -203,13 +203,13 @@ if "%UPDATE_MODE%"=="1" (
     echo.
     echo  Press any key to launch the updated app...
     pause >nul
-    start "" "%TARGET_EXE%"
+    explorer.exe "%TARGET_EXE%"
     exit /b 0
 )
 
 echo  Press any key to launch...
 pause >nul
-start "" "%TARGET_EXE%"
+explorer.exe "%TARGET_EXE%"
 exit /b 0
 
 :die
