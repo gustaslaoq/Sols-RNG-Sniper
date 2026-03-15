@@ -22,33 +22,37 @@ echo.
 echo  ==========================================
 echo   Slaoq's Sniper - Build Pipeline
 echo  ==========================================
-echo  Repo   : %REPO_URL%
+echo  Mode   : %UPDATE_MODE% (1=auto-update, 0=manual)
 echo  Output : %TARGET_EXE%
 echo  ==========================================
 echo.
 
 if "%UPDATE_MODE%"=="0" (
-    echo [0/10] Checking if already up to date...
+    echo [PRE] Checking if already up to date...
     set "REMOTE_SHA="
     set "LOCAL_SHA=none"
 
-    for /f "usebackq delims=" %%s in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "try { (Invoke-WebRequest -Uri '%REPO_API%' -UseBasicParsing | ConvertFrom-Json).sha.Substring(0,7) } catch { '' }" 2^>nul`) do set "REMOTE_SHA=%%s"
+    for /f "usebackq delims=" %%s in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { (Invoke-WebRequest -Uri '%REPO_API%' -UseBasicParsing | ConvertFrom-Json).sha.Substring(0,7) } catch { '' }" 2^>nul`) do set "REMOTE_SHA=%%s"
 
     if exist "%SCRIPT_DIR%version.txt" (
         set /p LOCAL_SHA=<"%SCRIPT_DIR%version.txt"
     )
 
     if not "!REMOTE_SHA!"=="" (
-        if "!LOCAL_SHA!"=="!REMOTE_SHA!" (
-            echo  Already up to date ^(!REMOTE_SHA!^). Launching app...
+        if /i "!LOCAL_SHA!"=="!REMOTE_SHA!" (
+            echo  Already up to date (!REMOTE_SHA!). Launching app...
             echo.
-            start "" "%TARGET_EXE%"
-            exit /b 0
+            if exist "%TARGET_EXE%" (
+                start "" "%TARGET_EXE%"
+                exit /b 0
+            ) else (
+                echo  WARNING: Exe not found, proceeding with build...
+            )
+        ) else (
+            echo  Update needed: !LOCAL_SHA! -^> !REMOTE_SHA!
         )
-        echo  Update needed: !LOCAL_SHA! -^> !REMOTE_SHA!
     ) else (
-        echo  Could not reach GitHub. Proceeding with local build...
+        echo  Could not reach GitHub. Proceeding with build...
     )
     echo.
 )
@@ -57,7 +61,6 @@ echo [1/10] Checking Python...
 where python >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found. Install from https://python.org
-    echo  Tick "Add Python to PATH" during install.
     goto die
 )
 python --version
@@ -83,30 +86,25 @@ echo  URL: %REPO_URL%
 echo.
 git clone --depth=1 "%REPO_URL%" "%BUILD_DIR%"
 echo.
-if errorlevel 1 (
-    echo  [ERROR] git clone failed - read the git message above.
-    echo  Run once in a terminal to cache credentials:
-    echo    git clone %REPO_URL%
-    goto die
-)
+if errorlevel 1 ( echo  [ERROR] git clone failed & goto die )
 echo  OK  Cloned
 
-echo [5/10] Stamping build info...
+echo [5/10] Stamping build SHA...
 cd /d "%BUILD_DIR%"
 for /f %%h in ('git rev-parse --short HEAD 2^>nul') do set COMMIT_SHA=%%h
 echo  Commit: %COMMIT_SHA%
 
 if exist "%PS1_FILE%" del "%PS1_FILE%"
-echo $sha = "%COMMIT_SHA%"                                                         >> "%PS1_FILE%"
-echo $file = 'main.py'                                                             >> "%PS1_FILE%"
-echo $content = Get-Content $file -Raw -Encoding UTF8                              >> "%PS1_FILE%"
-echo $marker = 'class AutoUpdater(QObject):'                                       >> "%PS1_FILE%"
-echo $newline = [System.Environment]::NewLine                                      >> "%PS1_FILE%"
+echo $sha = "%COMMIT_SHA%"                                                             > "%PS1_FILE%"
+echo $file = 'main.py'                                                                >> "%PS1_FILE%"
+echo $content = Get-Content $file -Raw -Encoding UTF8                                 >> "%PS1_FILE%"
+echo $marker = 'class AutoUpdater(QObject):'                                          >> "%PS1_FILE%"
+echo $newline = [System.Environment]::NewLine                                         >> "%PS1_FILE%"
 echo $insert = 'class AutoUpdater(QObject):' + $newline + '    _BUILT_SHA = ' + [char]39 + $sha + [char]39  >> "%PS1_FILE%"
-echo if ($content -notmatch '_BUILT_SHA') {                                        >> "%PS1_FILE%"
-echo     $content = $content -replace [regex]::Escape($marker), $insert            >> "%PS1_FILE%"
-echo }                                                                              >> "%PS1_FILE%"
-echo Set-Content $file $content -Encoding UTF8 -NoNewline                          >> "%PS1_FILE%"
+echo if ($content -notmatch '_BUILT_SHA') {                                           >> "%PS1_FILE%"
+echo     $content = $content -replace [regex]::Escape($marker), $insert               >> "%PS1_FILE%"
+echo }                                                                                 >> "%PS1_FILE%"
+echo Set-Content $file $content -Encoding UTF8 -NoNewline                             >> "%PS1_FILE%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1_FILE%"
 del "%PS1_FILE%" >nul 2>&1
 echo  OK
@@ -114,11 +112,7 @@ echo  OK
 echo [6/10] Installing dependencies...
 python -m pip install --upgrade pip --quiet
 python -m pip install pyinstaller PySide6 psutil keyboard aiohttp Pillow --quiet
-if errorlevel 1 (
-    echo  [ERROR] pip install failed.
-    echo  Try: pip install pyinstaller PySide6 psutil keyboard aiohttp Pillow
-    goto die
-)
+if errorlevel 1 ( echo  [ERROR] pip install failed & goto die )
 echo  OK
 
 echo [7/10] Downloading assets...
@@ -129,18 +123,18 @@ if not exist "assets\logo.png" (
 )
 if exist "assets\logo.png" (
     echo  Generating app.ico...
-    python -c "from PIL import Image; img=Image.open('assets/logo.png').convert('RGBA'); img.save('assets/app.ico',format='ICO',sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]); print('  OK  app.ico generated')"
+    python -c "from PIL import Image; img=Image.open('assets/logo.png').convert('RGBA'); img.save('assets/app.ico',format='ICO',sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
 )
 echo  OK
 
-echo [8/10] Building .exe (1-3 minutes)...
+echo [8/10] Building .exe (1-3 min)...
 echo.
 set "ICON_ARG="
 if exist "assets\app.ico" set "ICON_ARG=--icon=assets\app.ico"
-pyinstaller --onefile --windowed --name %EXE_NAME% --add-data sniper_engine.py;. --noconfirm --clean %ICON_ARG% main.py
+pyinstaller --onefile --windowed --name %EXE_NAME% --add-data "sniper_engine.py;." --noconfirm --clean %ICON_ARG% main.py
 echo.
 if errorlevel 1 ( echo  [ERROR] PyInstaller failed & goto die )
-if not exist "dist\%EXE_NAME%.exe" ( echo  [ERROR] .exe missing after build & goto die )
+if not exist "dist\%EXE_NAME%.exe" ( echo  [ERROR] .exe not found after build & goto die )
 echo  OK  .exe built
 
 echo [9/10] Copying executable...
@@ -151,23 +145,23 @@ if "%UPDATE_MODE%"=="1" (
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
     if not errorlevel 1 goto copy_ok
     set /a RETRY+=1
-    if !RETRY! geq 15 ( echo  [ERROR] Cannot replace exe & goto die )
+    if !RETRY! geq 15 ( echo  [ERROR] Cannot replace running exe & goto die )
     timeout /t 1 /nobreak >nul
     goto copy_retry
     :copy_ok
     echo  OK  Replaced
 ) else (
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul
-    if errorlevel 1 ( echo  [ERROR] Copy to %TARGET_EXE% failed & goto die )
-    echo  OK  Copied to %TARGET_EXE%
+    if errorlevel 1 ( echo  [ERROR] Copy failed & goto die )
+    echo  OK  Copied
 )
 for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
 echo [10/10] Finalizing...
 ie4uinit.exe -ClearIconCache >nul 2>&1
 ie4uinit.exe -show >nul 2>&1
-if not exist "%DEST_DIR%plugins" mkdir "%DEST_DIR%plugins"
-if not exist "%DEST_DIR%assets"  mkdir "%DEST_DIR%assets"
+if not exist "%DEST_DIR%plugins"  mkdir "%DEST_DIR%plugins"
+if not exist "%DEST_DIR%assets"   mkdir "%DEST_DIR%assets"
 if exist "%BUILD_DIR%\assets\logo.png" copy /Y "%BUILD_DIR%\assets\logo.png" "%DEST_DIR%assets\logo.png" >nul
 if exist "%BUILD_DIR%\assets\app.ico"  copy /Y "%BUILD_DIR%\assets\app.ico"  "%DEST_DIR%assets\app.ico"  >nul
 if not exist "%DEST_DIR%plugins\example_plugin.py" (
@@ -185,17 +179,17 @@ echo  OK
 
 echo.
 echo  ==========================================
-echo   BUILD COMPLETE
-echo   Exe    : %TARGET_EXE%
-echo   Commit : %COMMIT_SHA%
+echo   BUILD COMPLETE  ^|  Commit: %COMMIT_SHA%
+echo   Output: %TARGET_EXE%
 echo  ==========================================
 echo.
+
 if "%UPDATE_MODE%"=="1" (
     timeout /t 1 /nobreak >nul
     start "" "%TARGET_EXE%"
     exit /b 0
 )
-echo  Press any key to launch the app...
+echo  Press any key to launch...
 pause >nul
 start "" "%TARGET_EXE%"
 exit /b 0
