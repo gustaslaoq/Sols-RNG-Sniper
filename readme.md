@@ -11,7 +11,7 @@ Monitors Discord channels in real time and joins verified server links instantly
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org/downloads)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?style=flat-square&logo=windows&logoColor=white)](#)
-[![License](https://img.shields.io/github/license/gustaslaoq/Sols-RNG-Sniper?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL%20v3-blue?style=flat-square)](LICENSE)
 [![Download](https://img.shields.io/badge/Download-build.bat-00c853?style=flat-square&logo=github)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases/latest/download/build.bat)
 
 </div>
