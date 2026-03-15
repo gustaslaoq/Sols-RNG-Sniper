@@ -168,7 +168,8 @@ _setup_crash_reporter()
 
 APP_NAME      = "SLAOQ'S SOL'S RNG SNIPER"
 APP_VERSION   = "1.0"
-GITHUB_REPO   = "" 
+GITHUB_REPO   = "gustaslaoq/Sols-RNG-Sniper"
+EXE_NAME      = "SlaoqSniper"
 WIN_W         = 1200
 WIN_H         = 800
 WIN_MIN_W     = 980
@@ -1657,44 +1658,38 @@ class SplashScreen(QWidget):
         sig = self._update_result
 
         def _worker():
-            found   = False
-            new_sha = ""
-            if GITHUB_REPO:
-                try:
-                    url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
-                    req = urllib.request.Request(
-                        url, headers={"User-Agent": "SniperApp/SplashCheck"})
-                    with urllib.request.urlopen(req, timeout=7) as resp:
-                        data = json.loads(resp.read())
-                    new_sha   = data.get("sha", "")[:7]
-                    built_sha = getattr(AutoUpdater, "_BUILT_SHA", "")
-                    is_frozen = getattr(sys, "frozen", False)
-                    if new_sha and (not is_frozen or new_sha != built_sha):
-                        found = True
-                except Exception:
-                    pass
-            sig.emit(found, new_sha)
+            if not GITHUB_REPO or not getattr(sys, "frozen", False):
+                sig.emit(False, "")
+                return
+            built_sha  = _get_built_sha()
+            remote_sha = _fetch_remote_sha()
+            if remote_sha and built_sha and remote_sha != built_sha:
+                sig.emit(True, remote_sha)
+            else:
+                sig.emit(False, "")
 
         threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
 
     def _on_check_done(self, found: bool, sha: str):
         if found:
             self._pending_sha = sha
-            self._task_lbl.setText(f"Update found ({sha}) — rebuilding from source…")
+            self._task_lbl.setText(f"Update found ({sha}) — building new version…")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1600, self._do_update)
+            QTimer.singleShot(1200, self._do_update)
         else:
             self._step_timer.start()
             self._step()
 
     def _do_update(self):
-        self._task_lbl.setText("Launching build pipeline — closing app…")
-        updater = AutoUpdater()
-        threading.Thread(
-            target=updater.rebuild_and_restart,
-            daemon=False,
-            name="SplashRebuild").start()
-        QTimer.singleShot(1800, self._begin_fade_out)
+        self._task_lbl.setText("Launching build pipeline — app will close…")
+
+        def _worker():
+            ok = _launch_bat_update()
+            if not ok:
+                self._update_result.emit(False, "")
+
+        threading.Thread(target=_worker, daemon=False, name="SplashRebuild").start()
+        QTimer.singleShot(2000, self._begin_fade_out)
 
     def _begin_fade_out(self):
         self._step_timer.stop()
@@ -1715,82 +1710,96 @@ class SplashScreen(QWidget):
 
 # AUTO-UPDATER
 
+def _get_exe_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(os.path.dirname(sys.executable))
+    return Path(os.path.dirname(os.path.abspath(__file__)))
+
+def _get_built_sha() -> str:
+    return getattr(AutoUpdater, "_BUILT_SHA", "")
+
+def _fetch_remote_sha() -> str:
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
+        req = urllib.request.Request(url, headers={"User-Agent": "SniperApp/Updater"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read()).get("sha", "")[:7]
+    except Exception:
+        return ""
+
+def _read_version_txt() -> str:
+    try:
+        p = _get_exe_dir() / "version.txt"
+        return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def _ensure_bat() -> Optional[Path]:
+    exe_dir = _get_exe_dir()
+    bat     = exe_dir / "build.bat"
+    if bat.exists():
+        return bat
+    if not GITHUB_REPO:
+        return None
+    try:
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
+        req = urllib.request.Request(url, headers={"User-Agent": "SniperApp/Updater"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+        text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+        bat.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        return bat
+    except Exception as exc:
+        print(f"[Updater] Could not fetch build.bat: {exc}")
+        return None
+
+def _launch_bat_update() -> bool:
+    bat = _ensure_bat()
+    if not bat:
+        print("[Updater] build.bat not available.")
+        return False
+    if getattr(sys, "frozen", False):
+        target = str(sys.executable)
+    else:
+        target = str(_get_exe_dir() / f"{EXE_NAME}.exe")
+    try:
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(bat), "--update", target],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            cwd=str(_get_exe_dir()),
+        )
+        return True
+    except Exception as exc:
+        print(f"[Updater] Failed to launch build.bat: {exc}")
+        return False
+
+
 class AutoUpdater(QObject):
     update_available = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._built_sha: str = getattr(self.__class__, "_BUILT_SHA", "")
-
-    @property
-    def _is_frozen(self) -> bool:
-        return getattr(sys, "frozen", False)
-
-    @property
-    def _exe_dir(self) -> Path:
-        if self._is_frozen:
-            return Path(os.path.dirname(sys.executable))
-        return Path(os.path.dirname(os.path.abspath(__file__)))
 
     def check_async(self):
         if not GITHUB_REPO:
             return
+        if not getattr(sys, "frozen", False):
+            return
         threading.Thread(target=self._check, daemon=True, name="AutoUpdate").start()
 
     def _check(self):
-        try:
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
-            req = urllib.request.Request(url, headers={"User-Agent": "SniperApp/AutoUpdater"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-            latest_sha = data.get("sha", "")[:7]
-            if not latest_sha:
-                return
-            if self._is_frozen and latest_sha == self._built_sha:
-                return
-            self.update_available.emit(latest_sha)
-        except Exception:
-            pass
+        built_sha  = _get_built_sha()
+        remote_sha = _fetch_remote_sha()
+        if remote_sha and built_sha and remote_sha != built_sha:
+            self.update_available.emit(remote_sha)
 
     def rebuild_and_restart(self):
-        bat = self._exe_dir / "build.bat"
-
-        if not bat.exists() and GITHUB_REPO:
+        if _launch_bat_update():
             try:
-                bat_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
-                req = urllib.request.Request(bat_url, headers={"User-Agent": "SniperApp/AutoUpdater"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    raw = resp.read()
-                text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-                bat.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
-            except Exception as exc:
-                print(f"[AutoUpdater] Could not download build.bat: {exc}")
-                return
-
-        if not bat.exists():
-            print("[AutoUpdater] build.bat not found — cannot update.")
-            return
-
-        if self._is_frozen:
-            target_exe = str(sys.executable)
-        else:
-            target_exe = str(self._exe_dir / f"{EXE_NAME}.exe")
-
-        try:
-            subprocess.Popen(
-                ["cmd.exe", "/c", str(bat), "--update", target_exe],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                cwd=str(self._exe_dir),
-            )
-        except Exception as exc:
-            print(f"[AutoUpdater] Failed to launch build.bat: {exc}")
-            return
-
-        try:
-            QApplication.instance().quit()
-        except Exception:
-            pass
-        sys.exit(0)
+                QApplication.instance().quit()
+            except Exception:
+                pass
+            sys.exit(0)
 
 # TITLE BAR
 
@@ -3812,12 +3821,10 @@ class MainWindow(QMainWindow):
     def _on_update_available(self, sha: str):
         self._pd.show_notification(
             f"New version detected ({sha}) — rebuilding automatically…", "warning")
-        e = LogEntry(LogLevel.WARN, f"[UPDATE] New commit detected ({sha}), launching build pipeline…")
+        e = LogEntry(LogLevel.WARN, f"[UPDATE] New commit ({sha}) — launching build pipeline…")
         self._pl.append(e); self._pd.append(e, self._dev)
         self._stop()
-        threading.Thread(
-            target=self._updater.rebuild_and_restart,
-            daemon=False, name="AutoRebuild").start()
+        threading.Thread(target=_launch_bat_update, daemon=False, name="AutoRebuild").start()
 
     def _is_snipe_log(self, e: LogEntry) -> bool:
         if e.level in (LogLevel.SNIPE, LogLevel.SUCCESS, LogLevel.ERROR, LogLevel.WARN):
