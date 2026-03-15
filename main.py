@@ -1775,19 +1775,38 @@ def _launch_bat_update() -> bool:
         target = str(sys.executable)
     else:
         target = str(_get_exe_dir() / f"{EXE_NAME}.exe")
+
+    wrapper_content = (
+        "@echo off\r\n"
+        f"title Slaoq's Sniper \u2014 Auto Update\r\n"
+        f"call \"{bat}\" --update \"{target}\"\r\n"
+        "if errorlevel 1 (\r\n"
+        "    echo.\r\n"
+        "    echo  [ERROR] Build failed. See messages above.\r\n"
+        "    pause\r\n"
+        ")\r\n"
+    )
+
+    try:
+        wrapper = _get_exe_dir() / "_update_launcher.bat"
+        wrapper.write_bytes(wrapper_content.encode("utf-8"))
+    except Exception as exc:
+        print(f"[Updater] Could not write wrapper bat: {exc}")
+        return False
+
     try:
         si = subprocess.STARTUPINFO()
-        si.dwFlags    = subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 1  # SW_NORMAL — visible, not minimized
+        si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 1
         subprocess.Popen(
-            ["cmd.exe", "/c", str(bat), "--update", target],
+            ["cmd.exe", "/c", str(wrapper)],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             cwd=str(_get_exe_dir()),
             startupinfo=si,
         )
         return True
     except Exception as exc:
-        print(f"[Updater] Failed to launch build.bat: {exc}")
+        print(f"[Updater] Failed to launch update: {exc}")
         return False
 
 
