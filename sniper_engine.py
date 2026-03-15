@@ -391,20 +391,22 @@ class SniperConfig:
             webhook_raw   = raw.pop("webhook", {})
             cooldown_raw  = raw.pop("cooldown", {})
             raw.pop("CONFIG_PATH", None)  # legacy compat
-            cfg = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+
+            # Only pass fields that exist in the dataclass to avoid TypeError
+            valid_fields = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+            cfg = cls(**valid_fields)
             cfg.monitored_channels  = channels
             cfg.profiles            = profiles
             cfg.webhook             = WebhookConfig.from_dict(webhook_raw)
             cfg.config_path         = path
-            # Load cooldown TTLs (backwards-compatible: use defaults if key absent)
+            # Load cooldown TTLs from the dedicated "cooldown" sub-dict
             if cooldown_raw:
-                cfg.cooldown_guild_ttl   = cooldown_raw.get("guild_ttl",   30.0)
-                cfg.cooldown_profile_ttl = cooldown_raw.get("profile_ttl",  0.0)
-                cfg.cooldown_link_ttl    = cooldown_raw.get("link_ttl",    10.0)
-            cfg.extra_tokens         = raw.get("extra_tokens", [])
+                cfg.cooldown_guild_ttl   = float(cooldown_raw.get("guild_ttl",   30.0))
+                cfg.cooldown_profile_ttl = float(cooldown_raw.get("profile_ttl",  0.0))
+                cfg.cooldown_link_ttl    = float(cooldown_raw.get("link_ttl",    10.0))
             cfg.ensure_global()
             return cfg
-        except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError):
+        except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError, ValueError):
             cfg = cls()
             cfg.config_path = path
             return cfg
@@ -556,20 +558,33 @@ class RobloxLogReader:
         if not logs:
             return None
 
-        candidates = []
+        # Gather stats once
+        stat_map: list[tuple[Path, float, float]] = []  # (path, mtime, ctime)
         for p in logs:
             try:
-                stat = p.stat()
-                if stat.st_ctime >= self._launch_time - 2.0:
-                    candidates.append((p, stat.st_mtime))
+                s = p.stat()
+                stat_map.append((p, s.st_mtime, s.st_ctime))
             except OSError:
                 continue
 
-        if not candidates:
+        if not stat_map:
             return None
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return candidates[0][0]
+        # Primary: files whose mtime is recent (written-to after we marked launch).
+        # Use a 30-second slack because Roblox may have been writing just before
+        # mark_launch() was called, and the new session data starts immediately after.
+        window = self._launch_time - 30.0
+        recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
+
+        if recent:
+            recent.sort(key=lambda x: x[1], reverse=True)
+            return recent[0][0]
+
+        # Fallback: just return the most recently modified log file overall.
+        # This handles cold-start cases where the file was created much earlier
+        # but is the correct active session log.
+        stat_map.sort(key=lambda x: x[1], reverse=True)
+        return stat_map[0][0]
 
     def _read_biome_from(self, path: Path) -> Optional[str]:
         """
@@ -636,28 +651,51 @@ class RobloxLogReader:
             if not self._session_log.exists():
                 self._session_log = None
                 return None
-            # Session log older than 60s with no new data is stale
-            if time.time() - self._session_log.stat().st_mtime > 60:
-                self._session_log = None
-                return None
+            # Only treat the log as stale if Roblox has been fully quiet for
+            # an extended period AND the file is significantly old.
+            # During loading, Roblox may not write for 30-90 seconds.
+            stat = self._session_log.stat()
+            idle_secs = time.time() - stat.st_mtime
+            age_secs  = time.time() - self._launch_time
+            if idle_secs > 120 and age_secs > 120:
+                # Truly stale — re-check for a newer log
+                newer = self._find_session_log()
+                if newer and newer != self._session_log:
+                    self._session_log = newer
+                    self._seek_pos.pop(self._session_log, None)
+                    self._read_buf.pop(self._session_log, None)
         except OSError:
+            self._session_log = None
             return None
 
         return self._read_biome_from(self._session_log)
 
-    def wait_for_biome(self, timeout: float = 30.0) -> Optional[str]:
-        """Blocking wait (run in executor). Returns biome name or None on timeout."""
-        start = time.monotonic()
-        roblox_seen = False
+    def wait_for_biome(self, timeout: float = 75.0) -> Optional[str]:
+        """Blocking wait (run in executor). Returns biome name or None on timeout.
+
+        Increased timeout from 30s → 75s to account for slow load times.
+        Roblox can take 60+ seconds to fully load a new private server session.
+        """
+        start        = time.monotonic()
+        roblox_seen  = False
+        log_retry_t  = 0.0   # when to retry _find_session_log if it returned None
 
         while time.monotonic() - start < timeout:
+            elapsed = time.monotonic() - start
+
             if not roblox_seen and ProcessManager.is_roblox_running():
                 roblox_seen = True
 
-            if not roblox_seen and (time.monotonic() - start) > 15:
+            # Only give up on "Roblox never appeared" if 30s have passed
+            if not roblox_seen and elapsed > 30:
                 return None
 
             if roblox_seen:
+                # If session log hasn't been found yet, retry every 3s
+                if self._session_log is None and elapsed - log_retry_t >= 3.0:
+                    self._session_log = self._find_session_log()
+                    log_retry_t = elapsed
+
                 biome = self.get_current_biome()
                 if biome:
                     return biome
@@ -1186,8 +1224,9 @@ class SniperEngine:
             asyncio.create_task(self._log_monitor_loop(), name="log_monitor"),
         ]
 
+        # Wait for the core tasks to finish (they run until stop() cancels them)
         try:
-            await asyncio.gather(*self._tasks)
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         except asyncio.CancelledError:
             pass
 
@@ -1206,11 +1245,13 @@ class SniperEngine:
         if self.cooldown:
             self.cooldown.reset()
 
-        for task in self._tasks:
+        # Snapshot the list before cancelling — done_callbacks may mutate it
+        tasks_snapshot = list(self._tasks)
+        for task in tasks_snapshot:
             task.cancel()
 
         try:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            await asyncio.gather(*tasks_snapshot, return_exceptions=True)
         except Exception:
             pass
 
@@ -1430,8 +1471,11 @@ class SniperEngine:
                 f"https://www.roblox.com/games/{place_id}/"
                 f"?privateServerLinkCode={code}"
             )
+        elif place_id == "0" and code:
+            # Share-link type: reconstruct the original roblox.com/share URL
+            roblox_web_url = f"https://www.roblox.com/share?code={code}&type=Server"
         else:
-            roblox_web_url = uri   # fallback for share-link types
+            roblox_web_url = ""
 
         # ── Optional auto-join — execute first for minimum latency ───────────
         if self.config.auto_join_enabled:
@@ -1567,11 +1611,19 @@ class SniperEngine:
         """Called by gateway when a MESSAGE_DELETE event fires in a monitored channel."""
         if msg_id:
             self._deleted_msg_ids.add(msg_id)
+            # Cap the set to prevent unbounded growth from non-sniped deletions
+            if len(self._deleted_msg_ids) > 1000:
+                # Discard oldest half — set has no ordering so just trim arbitrarily
+                excess = list(self._deleted_msg_ids)[:500]
+                for k in excess:
+                    self._deleted_msg_ids.discard(k)
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
+        if not profile.verify_biome_name:
+            return   # no verification configured for this profile
         loop  = asyncio.get_running_loop()
         biome = await loop.run_in_executor(
-            None, lambda: self._log_reader.wait_for_biome(30.0))
+            None, lambda: self._log_reader.wait_for_biome(75.0))
 
         if biome is None:
             self._log(LogLevel.WARN, "[ANTI-BAIT] Biome verification timed out")
