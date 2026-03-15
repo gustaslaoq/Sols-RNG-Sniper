@@ -433,17 +433,37 @@ class PluginLoader:
     def __init__(self, plugins_dir: Path):
         self._dir     = plugins_dir
         self._plugins: list[PluginRecord] = []
+        self._state_path = plugins_dir.parent / "plugin_states.json"
+
+    def _load_states(self) -> dict:
+        try:
+            with open(self._state_path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_states(self):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            states = {rec.name: rec.enabled for rec in self._plugins}
+            with open(self._state_path, "w", encoding="utf-8") as fh:
+                json.dump(states, fh, indent=2)
+        except Exception:
+            pass
 
     def discover(self) -> int:
         self._plugins.clear()
         if not self._dir.exists():
             try: self._dir.mkdir(parents=True, exist_ok=True)
             except Exception: return 0
+        saved_states = self._load_states()
         loaded = 0
         for py_file in sorted(self._dir.glob("*.py")):
             if py_file.name.startswith("_"): continue
             rec = self._load_file(py_file)
             if rec:
+                if rec.name in saved_states:
+                    rec.enabled = saved_states[rec.name]
                 self._plugins.append(rec); loaded += 1
         return loaded
 
@@ -454,11 +474,11 @@ class PluginLoader:
             if spec is None or spec.loader is None: return None
             module = importlib.util.module_from_spec(spec)
             sys.modules[mod_name] = module
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            spec.loader.exec_module(module)
             return PluginRecord(module, path)
         except Exception as exc:
             rec = PluginRecord.__new__(PluginRecord)
-            rec.path = path; rec.module = None  # type: ignore[assignment]
+            rec.path = path; rec.module = None
             rec.enabled = False; rec.error = str(exc)
             return rec
 
@@ -478,7 +498,9 @@ class PluginLoader:
 
     def set_enabled(self, name: str, enabled: bool):
         rec = self.get(name)
-        if rec: rec.enabled = enabled
+        if rec:
+            rec.enabled = enabled
+            self._save_states()
 
 
 # ── Asset Manager ─────────────────────────────────────────────────────────────
@@ -1935,13 +1957,13 @@ class Sidebar(QFrame):
         # Inicializa o primeiro botão (Home) e carrega a logo
         self._sel(0)
         self._load_logo()
-        
-        # Animações
+
         self._width_anim = QPropertyAnimation(self, b"minimumWidth")
         self._width_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._width_anim.setDuration(220)
-        # Conectar o fim da animação para corrigir a posição do indicador
         self._width_anim.finished.connect(self._on_anim_finished)
+
+        QTimer.singleShot(0, lambda: self._sel(0, _initial=True))
 
     def _on_anim_finished(self):
         """Snap both indicators to the active button after sidebar resize."""
@@ -2045,12 +2067,23 @@ class Sidebar(QFrame):
             self._act_anim_y = self._act_target_y
         self._act_timer.start()
 
-    def _sel(self, idx: int):
+    def _sel(self, idx: int, _initial: bool = False):
         self._active_idx = idx
         for i, b in enumerate(self._btns):
             b.set_active(i == idx)
-        self._move_indicator_to(idx)       # hover bg snaps to new active
-        self._move_act_indicator_to(idx)   # white bar animates smoothly
+        if _initial:
+            btn = self._btns[idx]
+            y   = float(btn.mapTo(self, QPoint(0, 0)).y())
+            self._anim_y       = y
+            self._target_y     = y
+            self._act_anim_y   = y
+            self._act_target_y = y
+            self._anim_h       = btn.height()
+            self._act_anim_h   = btn.height()
+            self.update()
+        else:
+            self._move_indicator_to(idx)
+            self._move_act_indicator_to(idx)
         self.page_changed.emit(idx)
 
     def adapt(self, w: int):
@@ -2814,7 +2847,8 @@ class SettingsPage(QWidget):
             w.textChanged.connect(self._schedule_save)
         for w in (self._chk_aj, self._chk_close, self._chk_ab, self._chk_lf):
             w.toggled.connect(self._schedule_save)
-        for w in (self._spn, self._spn_tail, self._spn_pause):
+        for w in (self._spn, self._spn_tail, self._spn_pause,
+                  self._spn_cd_guild, self._spn_cd_profile, self._spn_cd_link):
             w.valueChanged.connect(self._schedule_save)
 
     def _schedule_save(self, *args):
