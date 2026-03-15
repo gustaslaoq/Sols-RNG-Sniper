@@ -154,7 +154,9 @@ echo  ==========================================
 echo.
 
 if "%UPDATE_MODE%"=="1" (
-    timeout /t 1 /nobreak >nul
+    echo.
+    echo  Update complete. Launching new version in 3 seconds...
+    timeout /t 3 /nobreak >nul
     start "" "%TARGET_EXE%"
     exit /b 0
 )
