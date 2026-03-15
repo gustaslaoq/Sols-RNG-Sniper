@@ -107,24 +107,25 @@ if not exist "dist\%EXE_NAME%.exe" ( echo  [ERROR] .exe not found after build & 
 echo  OK  .exe built
 
 echo [9/9] Installing...
-if "%UPDATE_MODE%"=="1" (
-    echo  Waiting for old process to fully exit...
-    timeout /t 6 /nobreak >nul
-    set RETRY=0
-    :copy_retry
-    copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
-    if not errorlevel 1 goto copy_ok
-    set /a RETRY+=1
-    if !RETRY! geq 20 ( echo  [ERROR] Cannot replace exe after 20 attempts & goto die )
-    timeout /t 1 /nobreak >nul
-    goto copy_retry
-    :copy_ok
-    echo  OK  Replaced old exe
-) else (
+if "%UPDATE_MODE%"=="0" (
     copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul
     if errorlevel 1 ( echo  [ERROR] Copy failed & goto die )
     echo  OK  Copied to %TARGET_EXE%
+    goto copy_done
 )
+echo  Waiting for old process to fully exit...
+timeout /t 6 /nobreak >nul
+set RETRY=0
+:copy_retry
+copy /Y "dist\%EXE_NAME%.exe" "%TARGET_EXE%" >nul 2>&1
+if not errorlevel 1 goto copy_ok
+set /a RETRY+=1
+if !RETRY! geq 20 ( echo  [ERROR] Cannot replace exe after 20 attempts & goto die )
+timeout /t 1 /nobreak >nul
+goto copy_retry
+:copy_ok
+echo  OK  Replaced old exe
+:copy_done
 for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
 echo  Finalizing...
@@ -174,7 +175,7 @@ if "%UPDATE_MODE%"=="1" (
     echo   Update complete! Starting new version...
     echo  ==========================================
     echo.
-    powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep 1; Start-Process '%TARGET_EXE%'"
+    powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep 2; Start-Process -FilePath '%TARGET_EXE%' -WorkingDirectory (Split-Path '%TARGET_EXE%')"
     exit /b 0
 )
 
