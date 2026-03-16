@@ -1,15 +1,3 @@
-"""
-sniper_engine.py — Slaoq's Sniper | Core Engine  v4.1
-------------------------------------------------------
-Model layer: Discord gateway, link resolver, log reader, process manager.
-
-Changes from v4.0:
-  - Removed dependency on core/ and services/ packages
-  - BlacklistManager, CooldownManager and PluginLoader are injected
-    from outside (passed via constructor) — no circular imports
-  - Project is now two-file: main.py + sniper_engine.py
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -659,373 +647,240 @@ class ProcessManager:
 
 class RobloxLogReader:
     """
-    Session-aware Roblox log reader — v4.3 fix.
+    Session-aware Roblox log reader — v5.0
 
-    Parsing strategy (matches the real log format seen in production):
+    Strategy (mirrors the reference biome macro exactly):
+    ──────────────────────────────────────────────────────
+    1. mark_launch() is called right before opening the Roblox URI.
+       It records the launch timestamp and clears all session state.
 
-    The Roblox client writes Rich-Presence updates via BloxstrapRPC in one of
-    two formats per line:
+    2. _find_session_log() picks the log file created MOST RECENTLY by ctime
+       (same as the reference: max(files, key=os.path.getctime)).
+       If the snipe happened recently we wait up to ~10s for Roblox to create
+       a new log file before falling back to the current newest.
 
-      [BloxstrapRPC] {"command":"SetRichPresence","data":{...,"largeImage":{"hoverText":"RAINY",...}}}
-      -- [BloxstrapRPC] {"command":"SetRichPresence","data":{...}}
+    3. wait_for_biome() opens the chosen log file, seeks to the END (file.seek(0,2))
+       — exactly like the reference macro — and then calls readline() in a loop.
+       This means only lines written AFTER we opened the file are ever seen,
+       which completely eliminates any possibility of reading pre-launch content.
 
-    We parse the JSON blob embedded in those lines to extract
-    data.largeImage.hoverText — exactly like the reference macro does with
-    `check_for_hover_text`.  As a fallback we also accept a bare
-    `"hoverText":"<BIOME>"` fragment for older Roblox versions.
-
-    Key fixes vs. v4.1/v4.2
-    ──────────────────────────────────────
-    1. _find_session_log now prioritises logs whose ctime >= launch_time - 5s
-       (files created by the new Roblox session), falling back to mtime >=
-       launch_time, and only then to the global most-recent-file fallback.
-       This prevents picking the OLD log file that was last modified 25 seconds
-       before launch and satisfying the old `mtime >= launch_time - 30` check.
-
-    2. _ingest_new_bytes uses sentinel -1 (not 0) to distinguish "first access
-       in this session" from "seek_pos is legitimately at byte 0".  On first
-       access it checks whether the file's mtime is before launch_time: if so,
-       the file has not been touched since launch and we wait for new writes
-       (returns False), avoiding reading pre-launch biome lines as current.
-
-    3. wait_for_biome no longer calls _ingest_new_bytes directly — it goes
-       through get_current_biome() so the mtime guard is always applied and
-       stale pre-launch content is never returned on the immediate pre-poll scan.
-
-    4. get_current_biome uses -1 (not 0) when resetting the seek position for
-       a newly discovered log file, so the mtime guard fires correctly.
-
-    5. Studio log files (name contains "studio") are excluded from discovery
-       to avoid mis-identifying a Roblox Studio session as a player session.
+    4. _parse_biome_from_line() extracts largeImage.hoverText via JSON parse
+       (method 1) or brace-depth substring parser (method 2 — for truncated lines).
+       There is no biome whitelist; any non-ignored hoverText value is returned.
     """
 
-    # Ignore these hoverText values — they are UI labels, not biome names.
+    # hoverText values that are UI labels, not biome names — always ignored.
     _HOVER_IGNORE = frozenset(["SOL'S RNG", "ROBLOX", ""])
 
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
-        self.tail_bytes           = tail_bytes
-        self._launch_time: float  = 0.0
+        # tail_bytes kept for API compat but not used in v5 seek-to-end approach
+        self.tail_bytes          = tail_bytes
+        self._launch_time: float = 0.0
         self._session_log: Optional[Path] = None
-        self._seek_pos: dict      = {}   # Path → int (last read position)
-        self._read_buf: dict      = {}   # Path → str (rolling text buffer)
-        self._last_known_biome: Optional[str] = None
 
-    # ─────────────────────────────────────────────
+    # ── session control ───────────────────────────────────────────────────────
 
-    def mark_launch(self):
-        """Call immediately before opening a Roblox URI.
-
-        Resets all session state so the reader will only consider log content
-        written after this point.  The sentinel value -1 in _seek_pos signals
-        _ingest_new_bytes that this is the first access for the new session,
-        allowing it to decide whether to seed from tail or wait for new bytes
-        based on the file's mtime vs. _launch_time.
-        """
+    def mark_launch(self) -> None:
+        """Call immediately before opening the Roblox URI."""
         self._launch_time = time.time()
         self._session_log = None
-        self._seek_pos.clear()
-        self._read_buf.clear()
-        self._last_known_biome = None
 
-    def reset_session(self):
+    def reset_session(self) -> None:
         self._launch_time = 0.0
         self._session_log = None
-        self._seek_pos.clear()
-        self._read_buf.clear()
-        self._last_known_biome = None
 
-    # ─────────────────────────────────────────────
+    # ── log file discovery ────────────────────────────────────────────────────
 
     def _find_session_log(self) -> Optional[Path]:
-        if not ROBLOX_LOG_PATH.exists():
-            return None
-        logs = [p for p in ROBLOX_LOG_PATH.glob("*.log")
-                if "studio" not in p.name.lower()]
-        if not logs:
-            return None
-        stat_map = []
-        for p in logs:
-            try:
-                s = p.stat()
-                stat_map.append((p, s.st_mtime, s.st_ctime))
-            except OSError:
-                continue
-        if not stat_map:
+        """
+        Return the most recently CREATED log file in the Roblox log directory,
+        excluding Studio logs — identical to the reference macro's strategy.
+
+        If mark_launch() was called recently we retry for up to 10 s to give
+        Roblox time to create the new session log file.
+        """
+        log_dir = ROBLOX_LOG_PATH
+
+        # Microsoft Store (UWP) fallback on Windows
+        if _PLATFORM == "Windows" and not log_dir.exists():
+            pkgs = Path(os.getenv("LOCALAPPDATA", "")) / "Packages"
+            for pkg in pkgs.glob("ROBLOXCORPORATION*"):
+                candidate = pkg / "LocalState" / "logs"
+                if candidate.exists():
+                    log_dir = candidate
+                    break
+
+        if not log_dir.exists():
             return None
 
-        # Priority 1: logs whose ctime (creation time) is after launch_time.
-        # ctime on Windows is true creation time; on macOS/Linux it's last
-        # metadata-change time, which is close enough for a freshly created file.
-        # A 5-second grace window absorbs clock skew and Roblox startup lag.
+        def _latest() -> Optional[Path]:
+            files = [
+                p for p in log_dir.glob("*.log")
+                if "studio" not in p.name.lower()
+                and "installer" not in p.name.lower()
+            ]
+            if not files:
+                return None
+            # Use ctime — same as reference: max(files, key=os.path.getctime)
+            return max(files, key=lambda p: p.stat().st_ctime)
+
+        # If we launched recently, wait up to 10 s for a brand-new log file
         if self._launch_time > 0:
-            created_after = [
-                (p, mt) for p, mt, ct in stat_map
-                if ct >= self._launch_time - 5
-            ]
-            if created_after:
-                created_after.sort(key=lambda x: x[1], reverse=True)
-                return created_after[0][0]
+            deadline = self._launch_time + 10.0
+            while time.time() < deadline:
+                p = _latest()
+                if p and p.stat().st_ctime >= self._launch_time - 2:
+                    return p
+                time.sleep(0.5)
 
-            # Priority 2: logs modified after launch_time (ctime may lag on
-            # some filesystems — mtime is updated more reliably on every write).
-            modified_after = [
-                (p, mt) for p, mt, ct in stat_map
-                if mt >= self._launch_time
-            ]
-            if modified_after:
-                modified_after.sort(key=lambda x: x[1], reverse=True)
-                return modified_after[0][0]
+        return _latest()
 
-        # Fallback: most recently modified log regardless of session window.
-        # This fires when launch_time == 0 (mark_launch not yet called) or
-        # when Roblox hasn't written to any log yet.
-        stat_map.sort(key=lambda x: x[1], reverse=True)
-        return stat_map[0][0]
-
-    # ─────────────────────────────────────────────
+    # ── line parser ───────────────────────────────────────────────────────────
 
     def _parse_biome_from_line(self, line: str) -> Optional[str]:
         """
-        Extract the biome name from a single log line.
+        Extract biome name from a single BloxstrapRPC log line.
 
-        Real log format (confirmed from production):
-          23:32:52 -- [BloxstrapRPC] {"command":"SetRichPresence","data":{"state":"...",
-            "smallImage":{"hoverText":"Sol's RNG","assetId":...},
-            "largeImage":{"hoverText":"RAINY","assetId":...}}}
+        Log format:
+          HH:MM:SS -- [BloxstrapRPC] {"command":"SetRichPresence","data":{
+            "smallImage":{"hoverText":"Sol's RNG",...},
+            "largeImage":{"hoverText":"HELL",...}}}
 
-        IMPORTANT: only largeImage.hoverText carries the biome name.
-        smallImage.hoverText is always "Sol's RNG" and must not be returned.
+        Only largeImage.hoverText is the biome.  smallImage is always "Sol's RNG".
 
-        Priority:
-          1. BloxstrapRPC full JSON parse → data.largeImage.hoverText only.
-          2. Brace-depth parser on the largeImage object (handles truncated
-             lines and nested objects that break simple [^}]* regex).
-
-        Any hoverText value that is not in _HOVER_IGNORE is returned as-is —
-        there is no biome whitelist.  Filtering of false detections (None,
-        "UNKNOWN", UI labels) happens at the _verify_biome call site.
+        Method 1: json.loads on the full JSON blob — fastest path.
+        Method 2: brace-depth substring parser for truncated lines where
+                  json.loads fails.
+        No biome whitelist — any non-ignored value is returned as-is.
         """
-        # ── 1. BloxstrapRPC full JSON parse ──────────────────────────────────
-        # Prefix may be "[BloxstrapRPC]" or "-- [BloxstrapRPC]"
-        if "BloxstrapRPC" in line and "SetRichPresence" in line:
+        if "BloxstrapRPC" not in line or "SetRichPresence" not in line:
+            return None
+
+        # ── Method 1: full JSON parse ─────────────────────────────────────────
+        json_start = line.find("{")
+        if json_start != -1:
             try:
-                json_start = line.find("{")
-                if json_start != -1:
-                    blob  = json.loads(line[json_start:])
-                    large = blob.get("data", {}).get("largeImage", {})
-                    hover = large.get("hoverText", "")
-                    if hover:
-                        candidate = hover.strip().upper()
-                        if candidate not in self._HOVER_IGNORE:
-                            return candidate
+                blob  = json.loads(line[json_start:])
+                large = blob.get("data", {}).get("largeImage", {})
+                hover = large.get("hoverText", "").strip().upper()
+                if hover and hover not in self._HOVER_IGNORE:
+                    return hover
             except (json.JSONDecodeError, ValueError, AttributeError, KeyError):
-                # JSON is truncated on this line — fall through to method 2
                 pass
 
-        # ── 2. Brace-depth largeImage parser ─────────────────────────────────
-        # Handles truncated lines (no closing braces) and nested objects inside
-        # largeImage.  Strategy:
-        #   a) Find "largeImage":{ in the line.
-        #   b) Walk forward tracking brace depth to isolate the largeImage object
-        #      (or take everything to end-of-line if the line is truncated).
-        #   c) Search for "hoverText":"..." inside that substring only, so
-        #      smallImage.hoverText is never mistakenly returned.
-        if "largeImage" in line and "hoverText" in line:
-            idx = line.find('"largeImage"')
-            if idx != -1:
-                brace_start = line.find('{', idx)
-                if brace_start != -1:
-                    # Walk to find closing brace (may not exist if truncated)
-                    depth = 0
-                    end   = len(line)
-                    for i in range(brace_start, len(line)):
-                        ch = line[i]
-                        if ch == '{':
-                            depth += 1
-                        elif ch == '}':
-                            depth -= 1
-                            if depth == 0:
-                                end = i + 1
-                                break
-                    large_substr = line[brace_start:end]
-                    # Try json.loads on the isolated object first
-                    try:
-                        obj   = json.loads(large_substr)
-                        hover = obj.get("hoverText", "").strip().upper()
-                        if hover and hover not in self._HOVER_IGNORE:
-                            return hover
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    # Fallback: simple regex inside the extracted substring
-                    m = re.search(
-                        r'"hoverText"\s*:\s*"([^"]+)"',
-                        large_substr, re.IGNORECASE)
-                    if m:
-                        candidate = m.group(1).strip().upper()
-                        if candidate not in self._HOVER_IGNORE:
-                            return candidate
+        # ── Method 2: brace-depth substring on "largeImage":{...} ────────────
+        # Handles truncated lines (no closing braces at end of line).
+        if "largeImage" not in line or "hoverText" not in line:
+            return None
+
+        idx = line.find('"largeImage"')
+        if idx == -1:
+            return None
+        brace_start = line.find('{', idx)
+        if brace_start == -1:
+            return None
+
+        # Walk forward to find the matching closing brace (or end-of-line)
+        depth = 0
+        end   = len(line)
+        for i in range(brace_start, len(line)):
+            if line[i] == '{':
+                depth += 1
+            elif line[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        large_substr = line[brace_start:end]
+
+        # Try json.loads on the isolated object
+        try:
+            obj   = json.loads(large_substr)
+            hover = obj.get("hoverText", "").strip().upper()
+            if hover and hover not in self._HOVER_IGNORE:
+                return hover
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Plain regex fallback inside the extracted substring
+        m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', large_substr, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip().upper()
+            if candidate not in self._HOVER_IGNORE:
+                return candidate
 
         return None
 
-    # ─────────────────────────────────────────────
-
-    def _scan_buffer(self, text: str) -> Optional[str]:
-        """Scan a text buffer line-by-line and return the *last* biome found."""
-        last_biome: Optional[str] = None
-        for line in text.splitlines():
-            found = self._parse_biome_from_line(line)
-            if found:
-                last_biome = found
-        return last_biome
-
-    # ─────────────────────────────────────────────
-
-    def _ingest_new_bytes(self, path: Path) -> bool:
-        """
-        Read any bytes appended to *path* since the last call and append them
-        to the rolling buffer.  Returns True when new bytes were actually read.
-
-        First-access strategy
-        ─────────────────────
-        On the very first access of a log file we need to seed the buffer so
-        that a biome already written before we started polling is detected
-        immediately.  HOWEVER, we must not read content from before the
-        current session (mark_launch).
-
-        If _launch_time is set we compute a conservative byte offset by
-        estimating how many bytes correspond to the pre-launch portion of the
-        file based on file age vs launch delta.  In practice we just seek to
-        the position the file was at when mark_launch() was called — we
-        approximate this as (current_size - bytes_written_since_launch).
-
-        Since we cannot know the exact byte offset without a live file handle
-        open across the launch, we use a safe heuristic:
-          • If the file was last modified BEFORE mark_launch: the entire file
-            is old — seek to end (nothing to read yet) so we don't emit stale
-            biomes, and return False so the caller waits for new writes.
-          • If the file was modified AFTER mark_launch: seed from the tail
-            (tail_bytes) as before — the new session content is at the end.
-        """
-        try:
-            st = path.stat()
-            size = st.st_size
-            mtime = st.st_mtime
-        except OSError:
-            return False
-
-        last_pos = self._seek_pos.get(path, -1)
-
-        if last_pos == -1:
-            # First access of this path in the current session.
-            if self._launch_time > 0 and mtime < self._launch_time:
-                # File not yet touched since launch — set seek to end so we
-                # pick up only future writes, and return False.
-                self._seek_pos[path] = size
-                self._read_buf[path] = ""
-                return False
-            # File was modified at or after launch: seed from tail.
-            start = max(0, size - self.tail_bytes)
-        else:
-            start = last_pos
-
-        if start >= size:
-            return False
-
-        try:
-            with open(path, "rb") as fh:
-                fh.seek(start)
-                new_bytes = fh.read()
-        except (OSError, IOError):
-            return False
-
-        if not new_bytes:
-            return False
-
-        self._seek_pos[path] = size
-        new_text = new_bytes.decode("utf-8", errors="ignore")
-        prev_buf = self._read_buf.get(path, "")
-        combined = prev_buf + new_text
-        max_len  = self.tail_bytes * 2
-        if len(combined) > max_len:
-            combined = combined[-max_len:]
-        self._read_buf[path] = combined
-        return True
-
-    # ─────────────────────────────────────────────
-
-    def _read_biome_from(self, path: Path) -> Optional[str]:
-        """
-        Ingest new bytes, scan the buffer, update _last_known_biome if
-        something new is found, and return the cached value.
-
-        Returning _last_known_biome even when no new bytes have arrived is the
-        core fix: the log stops growing once the game loads but the biome read
-        earlier is still valid.
-        """
-        had_new = self._ingest_new_bytes(path)
-        if had_new:
-            buf   = self._read_buf.get(path, "")
-            found = self._scan_buffer(buf)
-            if found:
-                self._last_known_biome = found
-        return self._last_known_biome
-
-    # ─────────────────────────────────────────────
+    # ── public API ────────────────────────────────────────────────────────────
 
     def get_current_biome(self) -> Optional[str]:
+        """
+        One-shot read: returns the most recent biome currently in the log,
+        or None.  Uses the same seek-to-end + readline loop internally.
+        Primarily useful for the biome watcher after initial verification.
+        """
         path = self._session_log or self._find_session_log()
         if not path:
-            return self._last_known_biome
-
-        try:
-            st        = path.stat()
-            idle_secs = time.time() - st.st_mtime
-            age_secs  = time.time() - st.st_ctime
-            if idle_secs > 120 and age_secs > 120:
-                newer = self._find_session_log()
-                if newer and newer != self._session_log:
-                    old = self._session_log
-                    if old:
-                        self._seek_pos.pop(old, None)
-                        self._read_buf.pop(old, None)
-                    # Keep _last_known_biome until the new log overwrites it.
-                    self._session_log = newer
-                    # Use -1 sentinel so _ingest_new_bytes applies the
-                    # mtime-vs-launch_time guard on first access of this file.
-                    self._seek_pos[newer] = -1
-                    self._read_buf[newer] = ""
-                    path = newer
-        except Exception:
-            pass
-
+            return None
         self._session_log = path
-        return self._read_biome_from(path)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                fh.seek(0, 2)           # go to end — skip historical content
+                # read whatever is already at end (nothing for a live file;
+                # may have content if the file was written before we opened it)
+                # Actually for get_current_biome we scan the WHOLE file tail
+                # to find the latest biome already written, but only looking
+                # backwards from the current end.
+                size  = fh.tell()
+                start = max(0, size - self.tail_bytes)
+                fh.seek(start)
+                text = fh.read()
+            last_biome = None
+            for line in text.splitlines():
+                found = self._parse_biome_from_line(line)
+                if found:
+                    last_biome = found
+            return last_biome
+        except (OSError, IOError):
+            return None
 
-    # ─────────────────────────────────────────────
-
-    def wait_for_biome(self, timeout: float = 75.0, poll: float = 1.0) -> Optional[str]:
+    def wait_for_biome(self, timeout: float = 75.0, poll: float = 0.1) -> Optional[str]:
         """
-        Poll until a biome is detected or *timeout* seconds elapse.
+        Wait until a biome appears in the Roblox log or timeout expires.
 
-        Does an immediate full scan before entering the poll loop so a biome
-        already present in the log (player already loaded) is returned instantly.
-        Poll interval is 1 s — Roblox writes in bursts so 50 ms was pure waste.
+        Mirrors the reference biome macro exactly:
+          1. Find the log file (waits up to 10 s for Roblox to create it).
+          2. Open the file and seek to the END — file.seek(0, 2).
+          3. Loop calling readline() until a biome line appears or timeout.
 
-        The immediate scan goes through get_current_biome() — which in turn
-        calls _ingest_new_bytes() with the mtime guard — so we never return a
-        biome from a pre-launch log file.
+        Seeking to the end means only lines written AFTER this call are ever
+        read — no pre-launch content, no session bleed, no stale biomes.
+        poll defaults to 0.1 s so the first biome line is picked up quickly.
         """
-        # Immediate scan — catches biomes already in the file for this session.
-        biome = self.get_current_biome()
-        if biome:
-            return biome
+        path = self._find_session_log()
+        if path is None:
+            logger.warning("[LogReader] No log file found after waiting — giving up")
+            return None
+        self._session_log = path
+        logger.info("[LogReader] Tailing log: %s", path.name)
 
-        end = time.time() + timeout
-        while time.time() < end:
-            time.sleep(poll)
-            biome = self.get_current_biome()
-            if biome:
-                return biome
+        end_time = time.time() + timeout
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                fh.seek(0, 2)   # ← key: start at end, skip all historical lines
+                while time.time() < end_time:
+                    line = fh.readline()
+                    if line:
+                        biome = self._parse_biome_from_line(line)
+                        if biome:
+                            logger.info("[LogReader] Biome detected: %s", biome)
+                            return biome
+                    else:
+                        time.sleep(poll)
+        except (OSError, IOError) as exc:
+            logger.error("[LogReader] Error reading log file: %s", exc)
+
+        logger.warning("[LogReader] Timeout (%ss) — no biome detected", timeout)
         return None
 
 # ─────────────────────────────────────────────────────────────────────────────
