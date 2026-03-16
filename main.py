@@ -1970,7 +1970,7 @@ class SplashScreen(QWidget):
 
     # logo
     _LOGO_SZ   = 88
-    _LOGO_GAP  = 14          # gap between logo right edge and "SLAOQ" left edge
+    _LOGO_GAP  = 8           # gap between logo right edge and "SLAOQ" left edge
     _LOGO_Y    = 96          # top-y of logo row
 
     # subtitle
@@ -1982,9 +1982,10 @@ class SplashScreen(QWidget):
 
     # speeds (increment per 16 ms frame)
     _FADE_IN_SPD   = 0.038   # ~420 ms
-    _SLIDE_SPD     = 0.016   # ~1000 ms  (very smooth slide)
-    _SUB_SPD       = 0.020   # ~800 ms
-    _BOTTOM_SPD    = 0.032   # ~500 ms
+    _SLIDE_SPD     = 0.013   # ~1250 ms  (slower, more deliberate)
+    _BRAND_SPD     = 0.022   # ~730 ms   (brand slides in after logo lands)
+    _SUB_SPD       = 0.018   # ~890 ms
+    _BOTTOM_SPD    = 0.028   # ~570 ms
     _FADE_OUT_SPD  = 0.048   # ~330 ms
 
     def __init__(self):
@@ -2001,6 +2002,7 @@ class SplashScreen(QWidget):
         self._opacity      = 0.0
         self._phase        = 0
         self._logo_t       = 0.0
+        self._brand_t      = 0.0
         self._sub_t        = 0.0
         self._bottom_alpha = 0.0
         self._bar_value    = 0.0
@@ -2155,7 +2157,7 @@ class SplashScreen(QWidget):
             self.setWindowOpacity(self._opacity)
 
         if self._phase == 0:
-            # ── logo slides, brand emerges ────────────────────────────────────
+            # ── phase 0a: logo slides from centre to left ─────────────────────
             self._logo_t = min(1.0, self._logo_t + self._SLIDE_SPD)
             e  = self._ease_out_expo(self._logo_t)
             sz = self._LOGO_SZ
@@ -2163,27 +2165,39 @@ class SplashScreen(QWidget):
             cx = self._logo_cx_start + (self._logo_cx_end - self._logo_cx_start) * e
             self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
 
-            # brand slides from slightly inside logo rightward — appears to emerge
-            brand_emerge_t = max(0.0, (self._logo_t - 0.25) / 0.75)
-            emerge_e       = self._ease_out_quint(brand_emerge_t)
-            slide_off      = int(26 * (1.0 - emerge_e))
-            self._brand_lbl.move(self._brand_x_end - slide_off, self._brand_y)
-            self._brand_eff.setOpacity(max(0.0, min(1.0, brand_emerge_t * 1.4)))
-
-            # glow fades in as logo approaches final position
-            if self._logo_t > 0.6:
-                glow_alpha = (self._logo_t - 0.6) / 0.4
+            # logo glow fades in during second half of slide
+            if self._logo_t > 0.5:
+                glow_alpha = (self._logo_t - 0.5) / 0.5
+                self._glow.set_logo_only(True)
                 self._glow.show()
                 self._glow.raise_()
                 self._glow.set_alpha(glow_alpha)
                 self._glow.update()
 
             if self._logo_t >= 1.0:
+                # logo has landed — snap and begin brand animation
                 self._logo_lbl.move(self._logo_cx_end - sz // 2, self._LOGO_Y)
-                self._brand_lbl.move(self._brand_x_end, self._brand_y)
-                self._brand_eff.setOpacity(1.0)
+                self._glow.set_logo_only(True)
                 self._glow.set_alpha(1.0)
                 self._glow.update()
+                self._phase = 0.5   # brand phase
+
+        elif self._phase == 0.5:
+            # ── phase 0b: brand slides in from left edge of its final position ─
+            self._brand_t = min(1.0, self._brand_t + self._BRAND_SPD)
+            e = self._ease_out_quint(self._brand_t)
+            slide_off = int(22 * (1.0 - e))
+            self._brand_lbl.move(self._brand_x_end - slide_off, self._brand_y)
+            self._brand_eff.setOpacity(e)
+
+            # brand glow fades in with brand
+            self._glow.set_logo_only(False)
+            self._glow.set_alpha(1.0)
+            self._glow.update()
+
+            if self._brand_t >= 1.0:
+                self._brand_lbl.move(self._brand_x_end, self._brand_y)
+                self._brand_eff.setOpacity(1.0)
                 self._phase = 1
 
         elif self._phase == 1:
@@ -2294,9 +2308,13 @@ class _SplashGlowWidget(QWidget):
     def __init__(self, parent, sz, gap, ly):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._alpha  = 0.0
-        self._lx     = 0;  self._ly  = ly;  self._lsz = sz
-        self._bx     = 0;  self._by  = 0;   self._bw  = 0;  self._bh = 0
+        self._alpha     = 0.0
+        self._logo_only = True   # True = only draw logo glow; False = draw both
+        self._lx        = 0;  self._ly  = ly;  self._lsz = sz
+        self._bx        = 0;  self._by  = 0;   self._bw  = 0;  self._bh = 0
+
+    def set_logo_only(self, v: bool):
+        self._logo_only = v
 
     def set_positions(self, logo_cx, logo_y, logo_sz,
                       brand_x, brand_y, brand_w, brand_h):
@@ -2314,35 +2332,53 @@ class _SplashGlowWidget(QWidget):
     def paintEvent(self, event):
         if self._alpha <= 0.01:
             return
+        from PySide6.QtGui import QRadialGradient
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
 
         a = self._alpha
 
-        # ── logo glow — soft radial halo ──────────────────────────────────────
-        cx = self._logo_cx
-        cy = self._ly + self._lsz // 2
-        r  = self._lsz // 2
+        # ── logo glow: true radial gradient — fully transparent at edge ───────
+        cx   = float(self._logo_cx)
+        cy   = float(self._ly + self._lsz // 2)
+        glow_r = self._lsz * 1.1          # halo radius ~110% of logo radius
 
-        for radius_factor, base_alpha in [(2.6, 8), (1.9, 15), (1.35, 26), (1.0, 8)]:
-            gr  = int(r * radius_factor)
-            rad = QColor(255, 255, 255, int(base_alpha * a))
-            p.setBrush(rad)
-            p.drawEllipse(cx - gr, cy - gr, gr * 2, gr * 2)
+        rg = QRadialGradient(cx, cy, glow_r)
+        rg.setColorAt(0.0,  QColor(255, 255, 255, int(38 * a)))
+        rg.setColorAt(0.35, QColor(255, 255, 255, int(22 * a)))
+        rg.setColorAt(0.65, QColor(255, 255, 255, int(9  * a)))
+        rg.setColorAt(1.0,  QColor(255, 255, 255, 0))
+        p.setBrush(rg)
+        p.drawEllipse(int(cx - glow_r), int(cy - glow_r),
+                      int(glow_r * 2),  int(glow_r * 2))
 
-        # ── brand text glow — wide horizontal halo ────────────────────────────
-        bx = self._bx - 6
-        by = self._by - 8
-        bw = self._bw + 12
-        bh = self._bh + 16
+        # ── brand text glow: linear gradient (only when brand is visible) ──────
+        if self._logo_only:
+            p.end()
+            return
 
-        for pad, base_alpha in [(22, 5), (14, 10), (7, 18), (2, 10)]:
-            glow = QColor(255, 255, 255, int(base_alpha * a))
-            p.setBrush(glow)
-            p.drawRoundedRect(bx - pad, by - pad // 2,
-                              bw + pad * 2, bh + pad,
-                              pad, pad)
+        # ── brand text glow: linear gradient fading to transparent at edges ───
+        # Use a wide soft rect that dissolves at all four edges.
+        bx  = float(self._bx)
+        by  = float(self._by)
+        bw  = float(self._bw)
+        bh  = float(self._bh)
+        pad = 28.0          # extra spread beyond the text bounding box
+
+        # horizontal gradient: transparent → white-ish → transparent
+        hg = QLinearGradient(bx - pad, 0, bx + bw + pad, 0)
+        hg.setColorAt(0.0,  QColor(0, 0, 0, 0))
+        hg.setColorAt(0.15, QColor(255, 255, 255, int(16 * a)))
+        hg.setColorAt(0.5,  QColor(255, 255, 255, int(24 * a)))
+        hg.setColorAt(0.85, QColor(255, 255, 255, int(16 * a)))
+        hg.setColorAt(1.0,  QColor(0, 0, 0, 0))
+        p.setBrush(hg)
+        spread = pad * 1.2
+        p.drawRoundedRect(
+            int(bx - spread), int(by - 10),
+            int(bw + spread * 2), int(bh + 20),
+            8, 8)
 
         p.end()
 
