@@ -1908,28 +1908,47 @@ class _SplashBarWidget(QWidget):
         super().__init__(parent)
         self._value = 0.0
         self._total = 1
-        self.setFixedHeight(3)
+        self.setFixedHeight(5)
         self.setStyleSheet("background: transparent;")
 
     def set_progress(self, value: float, total: int):
-        self._value  = value
-        self._total  = total
+        self._value = value
+        self._total = total
         self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
-        filled = int(w * min(self._value, self._total) / max(1, self._total))
+        h = self.height()
+        pct    = min(self._value, self._total) / max(1, self._total)
+        filled = int(w * pct)
+
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#1a1a1a"))
-        p.drawRoundedRect(0, 0, w, 3, 1, 1)
+
+        # track
+        p.setBrush(QColor("#141414"))
+        p.drawRoundedRect(0, 1, w, h - 2, 1, 1)
+
         if filled > 0:
-            grad = QLinearGradient(0, 0, w, 0)
-            grad.setColorAt(0.0, QColor("#ffffff"))
-            grad.setColorAt(1.0, QColor("#888888"))
+            # outer glow — wide soft halo
+            for radius, alpha in [(10, 6), (6, 12), (3, 22)]:
+                glow = QColor(255, 255, 255, alpha)
+                p.setBrush(glow)
+                p.drawRoundedRect(0, h // 2 - radius, filled, radius * 2, radius, radius)
+
+            # bar fill — white → light grey
+            grad = QLinearGradient(0, 0, filled, 0)
+            grad.setColorAt(0.0, QColor("#e8e8e8"))
+            grad.setColorAt(1.0, QColor("#ffffff"))
             p.setBrush(grad)
-            p.drawRoundedRect(0, 0, filled, 3, 1, 1)
+            p.drawRoundedRect(0, 1, filled, h - 2, 1, 1)
+
+            # bright leading dot
+            dot_r = h - 1
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(filled - dot_r // 2, (h - dot_r) // 2, dot_r, dot_r)
+
         p.end()
 
 
@@ -1937,42 +1956,36 @@ class SplashScreen(QWidget):
     finished       = Signal()
     _update_result = Signal(bool, str)
 
-    # ── animation phases ──────────────────────────────────────────────────────
-    # Phase 0: fade in + logo slides from centre → left while "SLAOQ" fades in
-    # Phase 1: "SOL'S RNG SNIPER" rises up from below
-    # Phase 2: progress bar + task label appear, steps advance
-    # Phase 3: fade out
-
     _TASKS = [
-        "Initializing runtime environment…",
-        "Checking for updates…",
-        "Loading profiles and configuration…",
-        "Preparing snipe engine…",
+        "Initializing runtime environment...",
+        "Checking for updates...",
+        "Loading profiles and configuration...",
+        "Preparing snipe engine...",
         "Ready.",
     ]
 
-    # window geometry
+    # window
     _W = 520
     _H = 320
 
-    # logo: starts centred, slides to left column
-    _LOGO_SZ        = 96        # px, larger than before
-    _LOGO_CX_START  = 260       # centre-x when logo is centred (W/2)
-    _LOGO_CX_END    = 110       # centre-x of logo in final left position
-    _LOGO_Y         = 110       # top-y of logo (stays fixed vertically)
+    # logo
+    _LOGO_SZ   = 88
+    _LOGO_GAP  = 14          # gap between logo right edge and "SLAOQ" left edge
+    _LOGO_Y    = 96          # top-y of logo row
 
-    # "SLAOQ" label appears next to logo on the right
-    _BRAND_X        = 180       # left edge of brand text in final position
-    _BRAND_Y        = 110       # same baseline as logo top
+    # subtitle
+    _SUB_RISE  = 20          # px the subtitle rises during animation
 
-    # "SOL'S RNG SNIPER" subtitle — rises up
-    _SUB_Y_START    = 230       # initial y (below final)
-    _SUB_Y_END      = 205       # final y
-    _SUB_X          = 0         # full width, centred
+    # bar
+    _BAR_Y     = 270
+    _BAR_PAD   = 52
 
-    # progress bar + label
-    _BAR_Y          = 268
-    _BAR_PAD        = 44
+    # speeds (increment per 16 ms frame)
+    _FADE_IN_SPD   = 0.038   # ~420 ms
+    _SLIDE_SPD     = 0.016   # ~1000 ms  (very smooth slide)
+    _SUB_SPD       = 0.020   # ~800 ms
+    _BOTTOM_SPD    = 0.032   # ~500 ms
+    _FADE_OUT_SPD  = 0.048   # ~330 ms
 
     def __init__(self):
         super().__init__()
@@ -1985,35 +1998,51 @@ class SplashScreen(QWidget):
         self.move(screen.center().x() - self._W // 2,
                   screen.center().y() - self._H // 2)
 
-        # animation state
-        self._opacity       = 0.0
-        self._phase         = 0        # 0=logo-slide, 1=subtitle, 2=bar, 3=fadeout
-        self._logo_t        = 0.0      # 0→1: logo slide + brand fade
-        self._sub_t         = 0.0      # 0→1: subtitle rise
-        self._bottom_alpha  = 0.0
-        self._bar_value     = 0.0
-        self._bar_target    = 0.0
-        self._task_idx      = 0
-        self._update_checked = False
+        self._opacity      = 0.0
+        self._phase        = 0
+        self._logo_t       = 0.0
+        self._sub_t        = 0.0
+        self._bottom_alpha = 0.0
+        self._bar_value    = 0.0
+        self._bar_target   = 0.0
+        self._task_idx     = 0
+
+        # computed in _build
+        self._logo_cx_start = self._W // 2
+        self._logo_cx_end   = 0
+        self._brand_x_end   = 0
+        self._brand_y       = 0
+        self._sub_y_start   = 0
+        self._sub_y_end     = 0
 
         self._update_result.connect(self._on_check_done)
         self._build()
 
-    # ── widget construction ───────────────────────────────────────────────────
-
     def _build(self):
+        W, H = self._W, self._H
+        sz   = self._LOGO_SZ
+        gap  = self._LOGO_GAP
+        ly   = self._LOGO_Y
+
         # background card
         self._root = QWidget(self)
         self._root.setObjectName("SplashRoot")
-        self._root.setGeometry(0, 0, self._W, self._H)
+        self._root.setGeometry(0, 0, W, H)
         self._root.setStyleSheet(
             "QWidget#SplashRoot{"
             "background-color:#000000;"
-            "border:1px solid #1e1e1e;"
-            "border-radius:18px;}")
+            "border:1px solid #181818;"
+            "border-radius:20px;}")
 
-        # ── logo label ────────────────────────────────────────────────────────
-        sz = self._LOGO_SZ
+        # ── glow canvas (painted separately, sits behind everything) ──────────
+        # We use a QLabel with no content as glow layer — actual glow drawn in
+        # _GlowWidget below, added as a sibling of _root
+        self._glow = _SplashGlowWidget(self, sz, gap, ly)
+        self._glow.setGeometry(0, 0, W, H)
+        self._glow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._glow.hide()     # shown once logo reaches final position
+
+        # ── logo ──────────────────────────────────────────────────────────────
         self._logo_lbl = QLabel(self._root)
         self._logo_lbl.setFixedSize(sz, sz)
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2024,57 +2053,70 @@ class SplashScreen(QWidget):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self._logo_lbl.setPixmap(px)
-        # start centred
-        self._logo_lbl.move(self._LOGO_CX_START - sz // 2, self._LOGO_Y)
+        self._logo_lbl.move(self._logo_cx_start - sz // 2, ly)
 
-        # ── "SLAOQ" brand label ───────────────────────────────────────────────
+        # ── "SLAOQ" brand ─────────────────────────────────────────────────────
         self._brand_lbl = QLabel("SLAOQ", self._root)
         self._brand_lbl.setStyleSheet(
-            "color:#ffffff;font-size:36px;font-weight:800;"
-            "letter-spacing:6px;background:transparent;")
-        self._brand_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            "color:#ffffff;font-size:34px;font-weight:800;"
+            "letter-spacing:4px;background:transparent;")
+        self._brand_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._brand_lbl.adjustSize()
-        self._brand_lbl.move(self._BRAND_X, self._BRAND_Y + (sz - self._brand_lbl.height()) // 2)
-        # opacity effect for brand fade-in
+        bw = self._brand_lbl.width()
+        bh = self._brand_lbl.height()
+
+        # centre the [logo + gap + brand] group in the window
+        group_w = sz + gap + bw
+        gx      = (W - group_w) // 2          # left edge of group
+        self._logo_cx_end  = gx + sz // 2     # logo centre-x when settled
+        self._brand_x_end  = gx + sz + gap    # brand left edge when settled
+        self._brand_y      = ly + (sz - bh) // 2
+
+        self._brand_lbl.move(self._brand_x_end, self._brand_y)
         self._brand_eff = QGraphicsOpacityEffect(self._brand_lbl)
         self._brand_eff.setOpacity(0.0)
         self._brand_lbl.setGraphicsEffect(self._brand_eff)
 
-        # ── "SOL'S RNG SNIPER" subtitle ───────────────────────────────────────
+        # pass final positions to glow widget
+        self._glow.set_positions(
+            logo_cx=self._logo_cx_end,
+            logo_y=ly, logo_sz=sz,
+            brand_x=self._brand_x_end, brand_y=self._brand_y,
+            brand_w=bw, brand_h=bh)
+
+        # ── subtitle ─────────────────────────────────────────────────────────
+        self._sub_y_end   = ly + sz + 16
+        self._sub_y_start = self._sub_y_end + self._SUB_RISE
+
         self._sub_lbl = QLabel("SOL'S RNG SNIPER", self._root)
-        self._sub_lbl.setFixedWidth(self._W)
-        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sub_lbl.setFixedWidth(W)
+        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._sub_lbl.setStyleSheet(
-            "color:#666666;font-size:11px;font-weight:600;"
-            "letter-spacing:4px;background:transparent;")
-        self._sub_lbl.move(0, self._SUB_Y_START)
+            "color:#4a4a4a;font-size:10px;font-weight:700;"
+            "letter-spacing:5px;background:transparent;")
+        self._sub_lbl.move(0, self._sub_y_start)
+
         self._sub_eff = QGraphicsOpacityEffect(self._sub_lbl)
         self._sub_eff.setOpacity(0.0)
         self._sub_lbl.setGraphicsEffect(self._sub_eff)
 
-        # ── progress bar + task label ─────────────────────────────────────────
-        pad = self._BAR_PAD
-        bar_w = self._W - pad * 2
+        # ── bottom bar + label ────────────────────────────────────────────────
+        pad   = self._BAR_PAD
+        bar_w = W - pad * 2
 
-        self._bar_w = _SplashBarWidget(self._root)
-        self._bar_w.setGeometry(pad, self._BAR_Y, bar_w, 3)
-
-        self._task_lbl = QLabel(self._TASKS[0], self._root)
-        self._task_lbl.setFixedWidth(bar_w)
-        self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._task_lbl.setStyleSheet("color:#444444;font-size:10px;background:transparent;")
-        self._task_lbl.move(pad, self._BAR_Y + 10)
-
-        # group the bar + label behind a single opacity effect
         self._bottom_container = QWidget(self._root)
-        self._bottom_container.setGeometry(0, self._BAR_Y - 4, self._W, 40)
+        self._bottom_container.setGeometry(0, self._BAR_Y - 8, W, 48)
         self._bottom_container.setStyleSheet("background:transparent;")
-        self._bottom_container.lower()
-        # Re-parent bar and task into container
-        self._bar_w.setParent(self._bottom_container)
-        self._bar_w.setGeometry(pad, 4, bar_w, 3)
-        self._task_lbl.setParent(self._bottom_container)
-        self._task_lbl.setGeometry(pad, 14, bar_w, 16)
+
+        self._bar_w = _SplashBarWidget(self._bottom_container)
+        self._bar_w.setGeometry(pad, 8, bar_w, 5)
+
+        self._task_lbl = QLabel(self._TASKS[0], self._bottom_container)
+        self._task_lbl.setGeometry(pad, 20, bar_w, 16)
+        self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._task_lbl.setStyleSheet(
+            "color:#383838;font-size:10px;letter-spacing:0.3px;background:transparent;")
 
         self._bottom_eff = QGraphicsOpacityEffect(self._bottom_container)
         self._bottom_eff.setOpacity(0.0)
@@ -2086,126 +2128,136 @@ class SplashScreen(QWidget):
         self._master_timer.timeout.connect(self._tick)
 
         self._step_timer = QTimer(self)
-        self._step_timer.setInterval(520)
+        self._step_timer.setInterval(680)
         self._step_timer.timeout.connect(self._step)
 
-    # ── public ───────────────────────────────────────────────────────────────
+    # ── easing ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ease_out_expo(t):
+        return 1.0 if t >= 1.0 else 1.0 - pow(2.0, -10.0 * t)
+
+    @staticmethod
+    def _ease_out_quint(t):
+        return 1.0 - (1.0 - t) ** 5
+
+    @staticmethod
+    def _ease_in_out_sine(t):
+        import math
+        return -(math.cos(math.pi * t) - 1.0) / 2.0
+
+    # ── tick ──────────────────────────────────────────────────────────────────
+
+    def _tick(self):
+        # window fade-in runs continuously until done
+        if self._opacity < 1.0:
+            self._opacity = min(1.0, self._opacity + self._FADE_IN_SPD)
+            self.setWindowOpacity(self._opacity)
+
+        if self._phase == 0:
+            # ── logo slides, brand emerges ────────────────────────────────────
+            self._logo_t = min(1.0, self._logo_t + self._SLIDE_SPD)
+            e  = self._ease_out_expo(self._logo_t)
+            sz = self._LOGO_SZ
+
+            cx = self._logo_cx_start + (self._logo_cx_end - self._logo_cx_start) * e
+            self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
+
+            # brand slides from slightly inside logo rightward — appears to emerge
+            brand_emerge_t = max(0.0, (self._logo_t - 0.25) / 0.75)
+            emerge_e       = self._ease_out_quint(brand_emerge_t)
+            slide_off      = int(26 * (1.0 - emerge_e))
+            self._brand_lbl.move(self._brand_x_end - slide_off, self._brand_y)
+            self._brand_eff.setOpacity(max(0.0, min(1.0, brand_emerge_t * 1.4)))
+
+            # glow fades in as logo approaches final position
+            if self._logo_t > 0.6:
+                glow_alpha = (self._logo_t - 0.6) / 0.4
+                self._glow.show()
+                self._glow.raise_()
+                self._glow.set_alpha(glow_alpha)
+                self._glow.update()
+
+            if self._logo_t >= 1.0:
+                self._logo_lbl.move(self._logo_cx_end - sz // 2, self._LOGO_Y)
+                self._brand_lbl.move(self._brand_x_end, self._brand_y)
+                self._brand_eff.setOpacity(1.0)
+                self._glow.set_alpha(1.0)
+                self._glow.update()
+                self._phase = 1
+
+        elif self._phase == 1:
+            # ── subtitle rises ────────────────────────────────────────────────
+            self._sub_t = min(1.0, self._sub_t + self._SUB_SPD)
+            e = self._ease_out_quint(self._sub_t)
+            y = int(self._sub_y_start + (self._sub_y_end - self._sub_y_start) * e)
+            self._sub_lbl.move(0, y)
+            self._sub_eff.setOpacity(self._ease_in_out_sine(self._sub_t))
+
+            if self._sub_t >= 1.0:
+                self._sub_lbl.move(0, self._sub_y_end)
+                self._sub_eff.setOpacity(1.0)
+                self._phase = 2
+                self._step_timer.start()
+
+        elif self._phase == 2:
+            # ── bar fades in, fills ───────────────────────────────────────────
+            if self._bottom_alpha < 1.0:
+                self._bottom_alpha = min(1.0, self._bottom_alpha + self._BOTTOM_SPD)
+                self._bottom_eff.setOpacity(self._ease_in_out_sine(self._bottom_alpha))
+
+            diff = self._bar_target - self._bar_value
+            if abs(diff) > 0.001:
+                self._bar_value += diff * 0.07
+                self._bar_w.set_progress(self._bar_value, len(self._TASKS))
+
+    # ── step / update ─────────────────────────────────────────────────────────
 
     def start(self):
         self.setWindowOpacity(0.0)
         self.show()
-        # kick off update check immediately so result is ready when animation ends
         self._launch_update_check()
         self._master_timer.start()
-
-    # ── animation tick ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _ease_out_cubic(t: float) -> float:
-        return 1.0 - (1.0 - t) ** 3
-
-    @staticmethod
-    def _ease_out_quad(t: float) -> float:
-        return 1.0 - (1.0 - t) ** 2
-
-    def _tick(self):
-        # ── global fade-in ────────────────────────────────────────────────────
-        if self._opacity < 1.0:
-            self._opacity = min(1.0, self._opacity + 0.07)
-            self.setWindowOpacity(self._opacity)
-
-        # ── phase 0: logo slides left, brand fades in ────────────────────────
-        if self._phase == 0:
-            self._logo_t = min(1.0, self._logo_t + 0.028)
-            e = self._ease_out_cubic(self._logo_t)
-            sz = self._LOGO_SZ
-
-            # logo x: interpolate centre-x from start to end
-            cx = self._LOGO_CX_START + (self._LOGO_CX_END - self._LOGO_CX_START) * e
-            self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
-
-            # brand fades in during second half of logo slide
-            brand_alpha = max(0.0, (self._logo_t - 0.4) / 0.6)
-            self._brand_eff.setOpacity(min(1.0, brand_alpha))
-
-            if self._logo_t >= 1.0:
-                self._phase = 1
-
-        # ── phase 1: subtitle rises up ───────────────────────────────────────
-        elif self._phase == 1:
-            self._sub_t = min(1.0, self._sub_t + 0.035)
-            e = self._ease_out_quad(self._sub_t)
-
-            y = int(self._SUB_Y_START + (self._SUB_Y_END - self._SUB_Y_START) * e)
-            self._sub_lbl.move(0, y)
-            self._sub_eff.setOpacity(e)
-
-            if self._sub_t >= 1.0:
-                self._phase = 2
-                # start step timer — drives the progress bar
-                self._step_timer.start()
-
-        # ── phase 2: bottom bar fades in + steps advance ─────────────────────
-        elif self._phase == 2:
-            if self._bottom_alpha < 1.0:
-                self._bottom_alpha = min(1.0, self._bottom_alpha + 0.055)
-                self._bottom_eff.setOpacity(self._bottom_alpha)
-
-            # smooth bar fill
-            diff = self._bar_target - self._bar_value
-            if abs(diff) > 0.003:
-                self._bar_value += diff * 0.10
-                self._bar_w.set_progress(self._bar_value, len(self._TASKS))
-
-    # ── step / update logic ───────────────────────────────────────────────────
 
     def _step(self):
         self._task_idx += 1
         self._bar_target = float(self._task_idx)
-
         if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
-
-        # step 1 = "Checking for updates" — was already launched in start()
-        # just wait for the signal; pause the step timer
         if self._task_idx == 1:
             self._step_timer.stop()
             return
-
         if self._task_idx >= len(self._TASKS):
             self._step_timer.stop()
-            QTimer.singleShot(700, self._begin_fade_out)
+            QTimer.singleShot(1000, self._begin_fade_out)
 
     def _launch_update_check(self):
         sig = self._update_result
-
         def _worker():
             found, sha = _needs_update()
             sig.emit(found, sha)
-
         threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
 
     def _on_check_done(self, found: bool, sha: str):
         if found:
-            self._task_lbl.setText(f"Update found ({sha}) — launching build…")
+            self._task_lbl.setText(f"Update found ({sha}) — launching build...")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1200, lambda: self._do_update(sha))
+            QTimer.singleShot(1500, lambda: self._do_update(sha))
         else:
-            # resume normal step sequence from task 1
             self._step_timer.start()
             self._step()
 
     def _do_update(self, sha: str):
-        self._task_lbl.setText("Build pipeline launched — closing app…")
+        self._task_lbl.setText("Build pipeline launched — closing app...")
         ok = _launch_bat_update()
         if ok:
             self._quit_for_update()
         else:
-            self._task_lbl.setText("build.bat not found — skipping update…")
+            self._task_lbl.setText("build.bat not found — skipping update...")
             self._bar_target = 0.0
             self._bar_value  = 0.0
             self._task_idx   = 1
-            QTimer.singleShot(600, lambda: (self._step_timer.start(), self._step()))
+            QTimer.singleShot(700, lambda: (self._step_timer.start(), self._step()))
 
     def _quit_for_update(self):
         self._step_timer.stop()
@@ -2217,8 +2269,6 @@ class SplashScreen(QWidget):
             pass
         os._exit(0)
 
-    # ── fade-out ──────────────────────────────────────────────────────────────
-
     def _begin_fade_out(self):
         self._step_timer.stop()
         self._phase = 3
@@ -2228,7 +2278,7 @@ class SplashScreen(QWidget):
         self._fade_out_timer.start()
 
     def _tick_fade_out(self):
-        self._opacity = max(0.0, self._opacity - 0.075)
+        self._opacity = max(0.0, self._opacity - self._FADE_OUT_SPD)
         self.setWindowOpacity(self._opacity)
         if self._opacity <= 0.0:
             self._fade_out_timer.stop()
@@ -2236,6 +2286,66 @@ class SplashScreen(QWidget):
             self._step_timer.stop()
             self.close()
             self.finished.emit()
+
+
+class _SplashGlowWidget(QWidget):
+    """Transparent overlay that paints soft glow halos behind the white text/logo."""
+
+    def __init__(self, parent, sz, gap, ly):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._alpha  = 0.0
+        self._lx     = 0;  self._ly  = ly;  self._lsz = sz
+        self._bx     = 0;  self._by  = 0;   self._bw  = 0;  self._bh = 0
+
+    def set_positions(self, logo_cx, logo_y, logo_sz,
+                      brand_x, brand_y, brand_w, brand_h):
+        self._logo_cx = logo_cx
+        self._ly      = logo_y
+        self._lsz     = logo_sz
+        self._bx      = brand_x
+        self._by      = brand_y
+        self._bw      = brand_w
+        self._bh      = brand_h
+
+    def set_alpha(self, a: float):
+        self._alpha = max(0.0, min(1.0, a))
+
+    def paintEvent(self, event):
+        if self._alpha <= 0.01:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+
+        a = self._alpha
+
+        # ── logo glow — soft radial halo ──────────────────────────────────────
+        cx = self._logo_cx
+        cy = self._ly + self._lsz // 2
+        r  = self._lsz // 2
+
+        for radius_factor, base_alpha in [(2.6, 8), (1.9, 15), (1.35, 26), (1.0, 8)]:
+            gr  = int(r * radius_factor)
+            rad = QColor(255, 255, 255, int(base_alpha * a))
+            p.setBrush(rad)
+            p.drawEllipse(cx - gr, cy - gr, gr * 2, gr * 2)
+
+        # ── brand text glow — wide horizontal halo ────────────────────────────
+        bx = self._bx - 6
+        by = self._by - 8
+        bw = self._bw + 12
+        bh = self._bh + 16
+
+        for pad, base_alpha in [(22, 5), (14, 10), (7, 18), (2, 10)]:
+            glow = QColor(255, 255, 255, int(base_alpha * a))
+            p.setBrush(glow)
+            p.drawRoundedRect(bx - pad, by - pad // 2,
+                              bw + pad * 2, bh + pad,
+                              pad, pad)
+
+        p.end()
+
 
 
 
