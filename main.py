@@ -744,6 +744,7 @@ class WebhookSender:
             if not self.config.on_snipe:
                 return
             profile_name     = kwargs.get("profile", "Unknown")
+            verify_biome     = (kwargs.get("verify_biome_name") or "").strip().upper()
             author_display   = kwargs.get("author_display") or kwargs.get("author", "Unknown")
             author_name      = kwargs.get("author", author_display)
             author_avatar    = kwargs.get("author_avatar_url", "")
@@ -760,8 +761,15 @@ class WebhookSender:
                 "icon_url": author_avatar if author_avatar else self.logo_url,
             }
 
+            # Title: "GLITCHED Biome Sniped" when biome is configured,
+            #        "Sniped" when the profile has no biome to verify.
+            if verify_biome:
+                snipe_label = f"{verify_biome} Biome Sniped"
+            else:
+                snipe_label = "Sniped"
+
             # Description: header + join link
-            desc_lines = [f"> # {profile_name} Biome Sniped — <t:{ts_unix}:R>", ""]
+            desc_lines = [f"> # {snipe_label} — <t:{ts_unix}:R>", ""]
             if roblox_web_url and not roblox_web_url.startswith("roblox://"):
                 desc_lines.append(f"## [Join Private Server Link]({roblox_web_url})")
             elif jump_url:
