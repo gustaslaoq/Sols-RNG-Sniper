@@ -643,23 +643,15 @@ class ProcessManager:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RobloxLogReader:
-    """
-    Session-aware Roblox log reader with robust incremental reading.
-
-    Improvements:
-    - Correct offset initialization (never skips early biome lines)
-    - Safe log switching with proper state reset
-    - Stable rolling buffer preventing pattern splits
-    """
-
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
         self.tail_bytes = tail_bytes
         self._launch_time: float = 0.0
         self._session_log: Optional[Path] = None
 
-        # incremental state
         self._seek_pos: dict[Path, int] = {}
         self._read_buf: dict[Path, str] = {}
+
+    # ─────────────────────────────────────────────
 
     def mark_launch(self):
         self._launch_time = time.time()
@@ -695,7 +687,8 @@ class RobloxLogReader:
         if not stat_map:
             return None
 
-        window = self._launch_time - 30.0
+        window = self._launch_time - 30
+
         recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
 
         if recent:
@@ -707,43 +700,70 @@ class RobloxLogReader:
 
     # ─────────────────────────────────────────────
 
-def _read_biome_from(self, path: Path) -> Optional[str]:
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
+    def _read_biome_from(self, path: Path) -> Optional[str]:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
 
-    last_pos = self._seek_pos.get(path, 0)
+        last_pos = self._seek_pos.get(path, 0)
 
-    if last_pos >= size:
-        return None
+        if last_pos >= size:
+            return None
 
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(last_pos)
-            data = fh.read()
-    except (OSError, IOError):
-        return None
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(last_pos)
+                new_bytes = fh.read()
+        except (OSError, IOError):
+            return None
 
-    self._seek_pos[path] = size
+        self._seek_pos[path] = size
 
-    text = data.decode("utf-8", errors="ignore")
+        new_text = new_bytes.decode("utf-8", errors="ignore")
 
-    # procura hoverText direto (mais rápido que regex complexa)
-    for line in reversed(text.splitlines()):
-        if '"hoverText"' in line:
-            m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
-            if m:
-                biome = m.group(1).strip().upper()
-                if biome not in ("SOL'S RNG", "IN MAIN MENU"):
+        prev_buf = self._read_buf.get(path, "")
+        combined = prev_buf + new_text
+
+        max_len = self.tail_bytes * 2
+        if len(combined) > max_len:
+            combined = combined[-max_len:]
+
+        self._read_buf[path] = combined
+
+        # reverse scan (fast newest detection)
+        lines = combined.splitlines()
+
+        for line in reversed(lines):
+
+            if '"hoverText"' in line:
+                m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
+                if m:
+                    biome = m.group(1).strip().upper()
+
+                    if biome not in (
+                        "SOL'S RNG",
+                        "IN MAIN MENU",
+                        "ROBLOX",
+                        "",
+                    ):
+                        return biome
+
+            # fallback direct biome detection
+            upper = line.upper()
+
+            for biome in PATTERNS.BIOME_DIRECT:
+                if biome in upper:
                     return biome
 
-    return None
+        return None
 
     # ─────────────────────────────────────────────
 
     def get_current_biome(self) -> Optional[str]:
+
         path = self._session_log or self._find_session_log()
+
         if not path:
             return None
 
@@ -753,11 +773,12 @@ def _read_biome_from(self, path: Path) -> Optional[str]:
             idle_secs = time.time() - st.st_mtime
             age_secs = time.time() - st.st_ctime
 
-            # stale log detection
             if idle_secs > 120 and age_secs > 120:
+
                 newer = self._find_session_log()
 
                 if newer and newer != self._session_log:
+
                     old = self._session_log
 
                     if old:
@@ -774,42 +795,25 @@ def _read_biome_from(self, path: Path) -> Optional[str]:
             pass
 
         self._session_log = path
+
         return self._read_biome_from(path)
-  
-    def wait_for_biome(self, timeout: float = 75.0) -> Optional[str]:
-        """Blocking wait (run in executor). Returns biome name or None on timeout.
 
-        Increased timeout from 30s → 75s to account for slow load times.
-        Roblox can take 60+ seconds to fully load a new private server session.
-        """
-        start        = time.monotonic()
-        roblox_seen  = False
-        log_retry_t  = 0.0   # when to retry _find_session_log if it returned None
+    # ─────────────────────────────────────────────
 
-        while time.monotonic() - start < timeout:
-            elapsed = time.monotonic() - start
+    def wait_for_biome(self, timeout: float = 75.0, poll: float = 0.05) -> Optional[str]:
 
-            if not roblox_seen and ProcessManager.is_roblox_running():
-                roblox_seen = True
+        end = time.time() + timeout
 
-            # Only give up on "Roblox never appeared" if 30s have passed
-            if not roblox_seen and elapsed > 30:
-                return None
+        while time.time() < end:
 
-            if roblox_seen:
-                # If session log hasn't been found yet, retry every 3s
-                if self._session_log is None and elapsed - log_retry_t >= 3.0:
-                    self._session_log = self._find_session_log()
-                    log_retry_t = elapsed
+            biome = self.get_current_biome()
 
-                biome = self.get_current_biome()
-                if biome:
-                    return biome
+            if biome:
+                return biome
 
-            time.sleep(0.5)
+            time.sleep(poll)
 
         return None
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LINK RESOLVER
