@@ -720,7 +720,7 @@ class RobloxLogReader:
         except OSError:
             return None
 
-        last_pos = self._seek_pos.get(path, max(0, size - self.tail_bytes))
+        last_pos = self._seek_pos.get(path, 0)
 
         if last_pos >= size:
             # File hasn't grown; use accumulated buffer if any
@@ -782,12 +782,22 @@ class RobloxLogReader:
             idle_secs = time.time() - stat.st_mtime
             age_secs  = time.time() - self._launch_time
             if idle_secs > 120 and age_secs > 120:
-                # Truly stale — re-check for a newer log
-                newer = self._find_session_log()
-                if newer and newer != self._session_log:
-                    self._session_log = newer
-                    self._seek_pos.pop(self._session_log, None)
-                    self._read_buf.pop(self._session_log, None)
+    # Truly stale — re-check for a newer log
+    newer = self._find_session_log()
+    if newer and newer != self._session_log:
+        old_log = self._session_log
+
+        # clear incremental state for the previous log
+        if old_log:
+            self._seek_pos.pop(old_log, None)
+            self._read_buf.pop(old_log, None)
+
+        # switch to the new log
+        self._session_log = newer
+
+        # ensure fresh incremental state
+        self._seek_pos[newer] = 0
+        self._read_buf[newer] = ""
         except OSError:
             self._session_log = None
             return None
