@@ -17,7 +17,9 @@ import json
 import logging
 import os
 import platform
+import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -62,8 +64,16 @@ DISCORD_GATEWAY_URL  = "wss://gateway.discord.gg/?v=10&encoding=json"
 DISCORD_API_BASE     = "https://discord.com/api/v10"
 LINK_RESOLVE_TIMEOUT = aiohttp.ClientTimeout(total=6, connect=3)
 HTTP_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
-ROBLOX_PROCESS_NAMES = {"RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Windows10Universal.exe"}
-ROBLOX_LOG_PATH      = Path(os.getenv("LOCALAPPDATA", "")) / "Roblox" / "logs"
+ROBLOX_PROCESS_NAMES = {"RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Windows10Universal.exe",
+                        "RobloxPlayer", "Roblox"}
+
+_PLATFORM = platform.system()
+if _PLATFORM == "Windows":
+    ROBLOX_LOG_PATH = Path(os.getenv("LOCALAPPDATA", "")) / "Roblox" / "logs"
+elif _PLATFORM == "Darwin":
+    ROBLOX_LOG_PATH = Path.home() / "Library" / "Logs" / "Roblox"
+else:  # Linux (via Wine or native client)
+    ROBLOX_LOG_PATH = Path.home() / ".local" / "share" / "roblox" / "logs"
 LOG_TAIL_BYTES       = 131072  # 128 KB
 
 
@@ -118,6 +128,86 @@ PATTERNS = _Patterns()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CROSS-PLATFORM SOUND
+# ─────────────────────────────────────────────────────────────────────────────
+
+def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> None:
+    """Play a sound alert in a fire-and-forget manner.
+
+    Priority order:
+      1. If *filepath* is given and the file exists → play via platform player.
+      2. Otherwise → synthesised beep (winsound on Windows, afplay/paplay/aplay on others).
+    """
+    system = platform.system()
+
+    # ── custom file ──────────────────────────────────────────────────────────
+    if filepath and Path(filepath).exists():
+        try:
+            if system == "Windows":
+                import winsound
+                winsound.PlaySound(filepath, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            elif system == "Darwin":
+                subprocess.Popen(["afplay", filepath],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # Try paplay (PulseAudio), then aplay (ALSA), then pacat
+                for cmd in (["paplay", filepath], ["aplay", filepath]):
+                    try:
+                        subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+                        break
+                    except FileNotFoundError:
+                        continue
+        except Exception:
+            pass
+        return
+
+    # ── synthesised beep ─────────────────────────────────────────────────────
+    try:
+        if system == "Windows":
+            import winsound
+            winsound.Beep(max(37, min(32767, freq)), max(1, duration_ms))
+        elif system == "Darwin":
+            # Generate a raw PCM beep and pipe it to afplay
+            import math, struct
+            rate    = 44100
+            samples = int(rate * duration_ms / 1000)
+            data    = b"".join(
+                struct.pack("<h", int(32767 * math.sin(2 * math.pi * freq * t / rate)))
+                for t in range(samples)
+            )
+            proc = subprocess.Popen(
+                ["afplay", "-f", "AIFF", "-r", str(rate), "-c", "1", "-b", "16", "-"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc.stdin.write(data)
+            proc.stdin.close()
+        else:
+            # Linux: try speaker-test beep via paplay with /dev/urandom fallback
+            try:
+                import math, struct
+                rate    = 44100
+                samples = int(rate * duration_ms / 1000)
+                data    = b"".join(
+                    struct.pack("<h", int(32767 * math.sin(2 * math.pi * freq * t / rate)))
+                    for t in range(samples)
+                )
+                proc = subprocess.Popen(
+                    ["paplay", "--raw", "--format=s16le",
+                     f"--rate={rate}", "--channels=1"],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+                proc.stdin.write(data)
+                proc.stdin.close()
+            except (FileNotFoundError, OSError):
+                subprocess.Popen(
+                    ["aplay", "-q", "-f", "S16_LE", "-r", str(rate), "-c", "1", "-"],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL).stdin.write(data)
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATA MODELS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -164,6 +254,7 @@ class SnipeProfile:
     kill_on_wrong_biome: bool      = True
     priority:            int       = 0       # lower number = evaluated first; 0 = default
     bypass_cooldown:     bool      = False   # priority profiles can skip cooldowns
+    sound_alert_path:    str       = ""      # custom audio file per profile (empty = global beep)
     _compiled_triggers:  list      = field(default_factory=list, repr=False, compare=False)
     _compiled_blacklist: list      = field(default_factory=list, repr=False, compare=False)
     _patterns_dirty:     bool      = field(default=True,         repr=False, compare=False)
@@ -213,6 +304,7 @@ class SnipeProfile:
             "kill_on_wrong_biome": self.kill_on_wrong_biome,
             "priority": self.priority,
             "bypass_cooldown": self.bypass_cooldown,
+            "sound_alert_path": self.sound_alert_path,
         }
 
     @classmethod
@@ -226,6 +318,7 @@ class SnipeProfile:
             kill_on_wrong_biome=d.get("kill_on_wrong_biome", True),
             priority=d.get("priority", 0),
             bypass_cooldown=d.get("bypass_cooldown", False),
+            sound_alert_path=d.get("sound_alert_path", ""),
         )
         p.compile()
         return p
@@ -304,7 +397,7 @@ class SniperConfig:
     auto_join_enabled:       bool          = True
     auto_join_delay_ms:      int           = 0
     pause_after_snipe_s:     int           = 0       # 0 = disabled
-    close_roblox_after_join: bool          = False
+    close_roblox_before_join: bool          = False
     biome_leave_action:      str           = "none"  # "none" | "kill" | "home"
     anti_bait_enabled:       bool          = True
     link_resolve_enabled:    bool          = True
@@ -344,26 +437,26 @@ class SniperConfig:
     def save(self):
         self.ensure_global()
         data = {
-            "token":                   self.token,
-            "monitored_channels":      [asdict(c) for c in self.monitored_channels],
-            "profiles":                [p.to_dict() for p in self.profiles],
-            "auto_join_enabled":       self.auto_join_enabled,
-            "auto_join_delay_ms":      self.auto_join_delay_ms,
-            "pause_after_snipe_s":     self.pause_after_snipe_s,
-            "close_roblox_after_join": self.close_roblox_after_join,
-            "biome_leave_action":      self.biome_leave_action,
-            "anti_bait_enabled":       self.anti_bait_enabled,
-            "link_resolve_enabled":    self.link_resolve_enabled,
-            "log_tail_bytes":          self.log_tail_bytes,
-            "dev_mode":                self.dev_mode,
-            "log_to_file":             self.log_to_file,
-            "theme":                   self.theme,
-            "hotkey_toggle_key":       self.hotkey_toggle_key,
-            "hotkey_toggle_en":        self.hotkey_toggle_en,
-            "hotkey_pause_key":        self.hotkey_pause_key,
-            "hotkey_pause_en":         self.hotkey_pause_en,
-            "hotkey_pause_dur":        self.hotkey_pause_dur,
-            "webhook":                 self.webhook.to_dict(),
+            "token":                    self.token,
+            "monitored_channels":       [asdict(c) for c in self.monitored_channels],
+            "profiles":                 [p.to_dict() for p in self.profiles],
+            "auto_join_enabled":        self.auto_join_enabled,
+            "auto_join_delay_ms":       self.auto_join_delay_ms,
+            "pause_after_snipe_s":      self.pause_after_snipe_s,
+            "close_roblox_before_join": self.close_roblox_before_join,
+            "biome_leave_action":       self.biome_leave_action,
+            "anti_bait_enabled":        self.anti_bait_enabled,
+            "link_resolve_enabled":     self.link_resolve_enabled,
+            "log_tail_bytes":           self.log_tail_bytes,
+            "dev_mode":                 self.dev_mode,
+            "log_to_file":              self.log_to_file,
+            "theme":                    self.theme,
+            "hotkey_toggle_key":        self.hotkey_toggle_key,
+            "hotkey_toggle_en":         self.hotkey_toggle_en,
+            "hotkey_pause_key":         self.hotkey_pause_key,
+            "hotkey_pause_en":          self.hotkey_pause_en,
+            "hotkey_pause_dur":         self.hotkey_pause_dur,
+            "webhook":                  self.webhook.to_dict(),
             "cooldown": {
                 "guild_ttl":   self.cooldown_guild_ttl,
                 "profile_ttl": self.cooldown_profile_ttl,
@@ -375,8 +468,21 @@ class SniperConfig:
             "delete_watch_seconds": self.delete_watch_seconds,
             "extra_tokens":         self.extra_tokens,
         }
-        with open(self.config_path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
+        # Atomic write: write to a tmp file then rename so a crash never
+        # corrupts the live config.json.
+        config_path = Path(self.config_path)
+        tmp_path    = config_path.with_suffix(".json.tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+            shutil.move(str(tmp_path), str(config_path))
+        except Exception:
+            # Clean up orphan tmp file on failure
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "SniperConfig":
@@ -385,12 +491,29 @@ class SniperConfig:
         try:
             with open(path, encoding="utf-8") as fh:
                 raw = json.load(fh)
+        except FileNotFoundError:
+            cfg = cls()
+            cfg.config_path = path
+            return cfg
+        except json.JSONDecodeError as exc:
+            logger.error("config.json is corrupted (%s) — resetting to defaults.", exc)
+            cfg = cls()
+            cfg.config_path = path
+            return cfg
+
+        try:
             channels      = [ChannelConfig(**c) for c in raw.pop("monitored_channels", [])]
             profiles_raw  = raw.pop("profiles", [])
             profiles      = [SnipeProfile.from_dict(d) for d in profiles_raw] if profiles_raw else _default_profiles()
             webhook_raw   = raw.pop("webhook", {})
             cooldown_raw  = raw.pop("cooldown", {})
             raw.pop("CONFIG_PATH", None)  # legacy compat
+
+            # Bug 1 backward-compat: old key was close_roblox_after_join
+            if "close_roblox_after_join" in raw and "close_roblox_before_join" not in raw:
+                raw["close_roblox_before_join"] = raw.pop("close_roblox_after_join")
+            else:
+                raw.pop("close_roblox_after_join", None)
 
             # Only pass fields that exist in the dataclass to avoid TypeError
             valid_fields = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
@@ -406,7 +529,8 @@ class SniperConfig:
                 cfg.cooldown_link_ttl    = float(cooldown_raw.get("link_ttl",    10.0))
             cfg.ensure_global()
             return cfg
-        except (FileNotFoundError, json.JSONDecodeError, TypeError, KeyError, ValueError):
+        except Exception as exc:
+            logger.error("Failed to parse config.json (%s) — resetting to defaults.", exc)
             cfg = cls()
             cfg.config_path = path
             return cfg
@@ -792,57 +916,53 @@ class ProfileFilter:
     def __init__(self, config: SniperConfig):
         self._cfg = config
 
-    def evaluate(self, text: str) -> Optional[SnipeProfile]:
-        clean     = _strip_urls(text)
-        profiles  = self._cfg.profiles
-        global_p  = next((p for p in profiles if p.locked), None)
+    # ── shared internal logic ─────────────────────────────────────────────────
 
-        if global_p and global_p.enabled and global_p.matches_blacklist(clean):
-            return None
-
-        sorted_profiles = sorted(
-            (p for p in profiles if not p.locked and p.enabled),
+    def _sorted_non_global(self) -> list:
+        return sorted(
+            (p for p in self._cfg.profiles if not p.locked and p.enabled),
             key=lambda p: p.priority,
         )
 
-        for p in sorted_profiles:
-            if p.matches_blacklist(clean):
-                continue
-            if p.matches_triggers(clean):
-                return p
-
-        return None
-
-    def evaluate_detailed(self, text: str) -> tuple:
-        clean     = _strip_urls(text)
-        profiles  = self._cfg.profiles
-        global_p  = next((p for p in profiles if p.locked), None)
-
+    def _global_blocked(self, clean: str):
+        """Return (blocked: bool, hit_keyword: str)."""
+        global_p = next((p for p in self._cfg.profiles if p.locked), None)
         if global_p and global_p.enabled and global_p.matches_blacklist(clean):
             hit = next(
                 (m.group(0) for pat in global_p._compiled_blacklist
                  if (m := pat.search(clean))),
-                "?"
+                "?",
             )
-            return None, f"global blacklist keyword '{hit}'"
+            return True, hit
+        return False, ""
 
-        sorted_profiles = sorted(
-            (p for p in profiles if not p.locked and p.enabled),
-            key=lambda p: p.priority,
-        )
+    def _match_profile(self, clean: str) -> tuple:
+        """Return (matched_profile_or_None, reject_reason_str)."""
+        blocked, kw = self._global_blocked(clean)
+        if blocked:
+            return None, f"global blacklist keyword '{kw}'"
 
-        for p in sorted_profiles:
+        for p in self._sorted_non_global():
             if p.matches_blacklist(clean):
                 hit = next(
                     (m.group(0) for pat in p._compiled_blacklist
                      if (m := pat.search(clean))),
-                    "?"
+                    "?",
                 )
                 return None, f"profile '{p.name}' blacklist keyword '{hit}'"
             if p.matches_triggers(clean):
                 return p, ""
 
         return None, "no profile trigger matched"
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def evaluate(self, text: str) -> Optional[SnipeProfile]:
+        profile, _ = self._match_profile(_strip_urls(text))
+        return profile
+
+    def evaluate_detailed(self, text: str) -> tuple:
+        return self._match_profile(_strip_urls(text))
 
     def rebuild(self):
         for p in self._cfg.profiles:
@@ -867,14 +987,15 @@ class DiscordGateway:
         self.config     = config
         self.on_message_delete = on_message_delete
 
-        self._ws:             Optional[aiohttp.ClientWebSocketResponse] = None
-        self._session:        Optional[aiohttp.ClientSession]           = None
-        self._heartbeat_task: Optional[asyncio.Task]                    = None
-        self._sequence:       Optional[int]                             = None
-        self._session_id:     Optional[str]                             = None
-        self._ping_ms:        float                                     = 0.0
-        self._running:        bool                                      = False
-        self._last_hb:        float                                     = 0.0
+        self._ws:                 Optional[aiohttp.ClientWebSocketResponse] = None
+        self._session:            Optional[aiohttp.ClientSession]           = None
+        self._heartbeat_task:     Optional[asyncio.Task]                    = None
+        self._sequence:           Optional[int]                             = None
+        self._session_id:         Optional[str]                             = None
+        self._resume_gateway_url: str                                       = DISCORD_GATEWAY_URL
+        self._ping_ms:            float                                     = 0.0
+        self._running:            bool                                      = False
+        self._last_hb:            float                                     = 0.0
 
     @property
     def ping_ms(self) -> float:
@@ -936,6 +1057,7 @@ class DiscordGateway:
             self._sequence = s
 
         if op == 10:
+            # Bug 5 fix: jitter before first heartbeat per Discord spec
             interval = d.get("heartbeat_interval", 41250) / 1000
             if self._heartbeat_task and not self._heartbeat_task.done():
                 self._heartbeat_task.cancel()
@@ -943,8 +1065,13 @@ class DiscordGateway:
                     await self._heartbeat_task
                 except asyncio.CancelledError:
                     pass
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(interval))
-            await self._identify()
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(interval))
+            # Bug 4 fix: attempt RESUME if we have a valid session_id + sequence
+            if self._session_id and self._sequence is not None:
+                await self._resume()
+            else:
+                await self._identify()
 
         elif op == 11:
             self._ping_ms = (time.monotonic() - self._last_hb) * 1000
@@ -953,8 +1080,14 @@ class DiscordGateway:
             if t == "READY":
                 u = d.get("user", {})
                 self._session_id = d.get("session_id")
+                self._resume_gateway_url = d.get("resume_gateway_url",
+                                                  DISCORD_GATEWAY_URL)
                 self.on_status(EngineStatus.CONNECTED)
-                self.on_log(LogEntry(LogLevel.SUCCESS, f"Connected as: {u.get('username', '?')}"))
+                self.on_log(LogEntry(LogLevel.SUCCESS,
+                    f"Connected as: {u.get('username', '?')}"))
+            elif t == "RESUMED":
+                self.on_status(EngineStatus.CONNECTED)
+                self.on_log(LogEntry(LogLevel.SUCCESS, "Session resumed — no messages lost."))
             elif t == "MESSAGE_CREATE":
                 asyncio.create_task(self._on_message(d))
             elif t == "MESSAGE_UPDATE":
@@ -963,21 +1096,45 @@ class DiscordGateway:
             elif t == "MESSAGE_DELETE":
                 asyncio.create_task(self._on_message_delete(d))
 
+        elif op == 7:
+            # Reconnect requested — close so _gateway_loop reconnects
+            self.on_log(LogEntry(LogLevel.WARN, "Reconnect requested by server."))
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+
         elif op == 9:
+            # Invalid session — clear resume state then re-identify
             self.on_log(LogEntry(LogLevel.WARN, "Session invalidated. Reconnecting…"))
+            self._session_id = None
+            self._sequence   = None
             await asyncio.sleep(2)
             if self._ws and not self._ws.closed:
                 await self._ws.close()
 
     async def _identify(self):
+        _os_map = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}
+        os_str  = _os_map.get(platform.system(), "linux")
         await self._ws.send_json({"op": 2, "d": {
             "token": self.token,
-            "properties": {"os": "windows", "browser": "Discord Client", "device": ""},
+            "properties": {"os": os_str, "browser": "Discord Client", "device": ""},
             "presence": {"status": "online", "afk": False},
         }})
 
+    async def _resume(self):
+        """Bug 4 fix: send RESUME (op 6) to recover missed messages after disconnect."""
+        await self._ws.send_json({"op": 6, "d": {
+            "token":      self.token,
+            "session_id": self._session_id,
+            "seq":        self._sequence,
+        }})
+
     async def _heartbeat_loop(self, interval: float):
-        self._last_hb = time.monotonic()
+        # Bug 5 fix: initial jitter — sleep random(0..1) * interval before first beat
+        jitter = random.random() * interval
+        try:
+            await asyncio.sleep(jitter)
+        except asyncio.CancelledError:
+            return
         while self._running and self._ws and not self._ws.closed:
             try:
                 self._last_hb = time.monotonic()
@@ -1109,7 +1266,8 @@ class SniperEngine:
         self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
 
         # ── deleted message IDs observed from MESSAGE_DELETE ──────────────
-        self._deleted_msg_ids: set = set()
+        # deque gives deterministic eviction order (FIFO) unlike set trimming
+        self._deleted_msg_ids: deque = deque(maxlen=1000)
 
         # ── injected subsystems ───────────────────────────────────────────
         self.blacklist = blacklist   # Optional BlacklistManager
@@ -1490,7 +1648,7 @@ class SniperEngine:
 
             roblox_running   = ProcessManager.is_roblox_running()
             in_game          = ProcessManager.is_in_game() if roblox_running else False
-            force_close      = self.config.close_roblox_after_join
+            force_close      = self.config.close_roblox_before_join
             self._log(LogLevel.DEBUG,
                 f"[JOIN] roblox_running={roblox_running}, in_game={in_game}, "
                 f"force_close={force_close}",
@@ -1536,15 +1694,13 @@ class SniperEngine:
         # ── Sound alert ───────────────────────────────────────────────────────
         if getattr(self.config, "sound_alert_enabled", False):
             self._log(LogLevel.DEBUG, "[ENGINE] Sound alert firing…", dev_only=True)
-            try:
-                import winsound
-                freq = getattr(self.config, "sound_alert_freq", 1000)
-                dur  = getattr(self.config, "sound_alert_dur_ms", 200)
-                threading.Thread(
-                    target=lambda: winsound.Beep(freq, dur),
-                    daemon=True, name="SoundAlert").start()
-            except Exception as exc:
-                self._log(LogLevel.DEBUG, f"[ENGINE] Sound alert failed: {exc}", dev_only=True)
+            freq       = getattr(self.config, "sound_alert_freq",   1000)
+            dur        = getattr(self.config, "sound_alert_dur_ms",  200)
+            # Per-profile custom sound file takes precedence over global beep
+            snd_path   = getattr(profile, "sound_alert_path", "") if profile else ""
+            threading.Thread(
+                target=lambda: play_sound(freq, dur, snd_path),
+                daemon=True, name="SoundAlert").start()
 
         # ── Build snipe data dict ─────────────────────────────────────────────
         snipe_data = {
@@ -1619,7 +1775,11 @@ class SniperEngine:
         while time.monotonic() < deadline and self._running:
             await asyncio.sleep(0.5)
             if msg_id in self._deleted_msg_ids:
-                self._deleted_msg_ids.discard(msg_id)
+                # Remove the found entry from the deque
+                try:
+                    self._deleted_msg_ids.remove(msg_id)
+                except ValueError:
+                    pass
                 if self.blacklist:
                     self.blacklist.add(author_id, author_name, reason="message_deleted")
                     self._log(LogLevel.WARN,
@@ -1633,14 +1793,9 @@ class SniperEngine:
 
     async def _on_discord_message_delete(self, guild_id: str, channel_id: str, msg_id: str):
         """Called by gateway when a MESSAGE_DELETE event fires in a monitored channel."""
+        # Bug 7 fix: deque(maxlen=1000) handles eviction automatically — no manual trim needed
         if msg_id:
-            self._deleted_msg_ids.add(msg_id)
-            # Cap the set to prevent unbounded growth from non-sniped deletions
-            if len(self._deleted_msg_ids) > 1000:
-                # Discard oldest half — set has no ordering so just trim arbitrarily
-                excess = list(self._deleted_msg_ids)[:500]
-                for k in excess:
-                    self._deleted_msg_ids.discard(k)
+            self._deleted_msg_ids.append(msg_id)
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         if not profile.verify_biome_name:
