@@ -707,60 +707,38 @@ class RobloxLogReader:
 
     # ─────────────────────────────────────────────
 
-    def _read_biome_from(self, path: Path) -> Optional[str]:
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return None
+def _read_biome_from(self, path: Path) -> Optional[str]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
 
-        last_pos = self._seek_pos.get(path)
+    last_pos = self._seek_pos.get(path, 0)
 
-        # first read for this log
-        if last_pos is None:
-            last_pos = 0
-            self._seek_pos[path] = 0
+    if last_pos >= size:
+        return None
 
-        if last_pos >= size:
-            text = self._read_buf.get(path, "")
-        else:
-            try:
-                with open(path, "rb") as fh:
-                    fh.seek(last_pos)
-                    new_bytes = fh.read()
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(last_pos)
+            data = fh.read()
+    except (OSError, IOError):
+        return None
 
-                self._seek_pos[path] = size
+    self._seek_pos[path] = size
 
-            except (OSError, IOError):
-                return None
+    text = data.decode("utf-8", errors="ignore")
 
-            new_text = new_bytes.decode("utf-8", errors="ignore")
-
-            prev_buf = self._read_buf.get(path, "")
-            combined = prev_buf + new_text
-
-            # maintain rolling window
-            max_len = self.tail_bytes * 2
-            if len(combined) > max_len:
-                combined = combined[-max_len:]
-
-            self._read_buf[path] = combined
-            text = combined
-
-        # regex detection
-        for pattern in PATTERNS.BIOME_PATTERNS:
-            matches = pattern.findall(text)
-            if matches:
-                biome = matches[-1].strip().upper()
-                if biome and biome.lower() not in ("none", "unknown", ""):
+    # procura hoverText direto (mais rápido que regex complexa)
+    for line in reversed(text.splitlines()):
+        if '"hoverText"' in line:
+            m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
+            if m:
+                biome = m.group(1).strip().upper()
+                if biome not in ("SOL'S RNG", "IN MAIN MENU"):
                     return biome
 
-        # fallback direct detection
-        upper = text.upper()
-        for biome in PATTERNS.BIOME_DIRECT:
-            if biome in upper:
-                return biome
-
-        return None
+    return None
 
     # ─────────────────────────────────────────────
 
