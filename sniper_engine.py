@@ -761,48 +761,40 @@ class RobloxLogReader:
     # ── public API ────────────────────────────────────────────────────────────
 
     def get_current_biome(self) -> Optional[str]:
-        if self._launch_time == 0:
-            return None
-        if not ProcessManager.is_roblox_running():
-            return None
+    path = self._session_log or self._find_session_log()
+    if not path:
+        return None
 
-        if self._session_log is None:
-            self._session_log = self._find_session_log()
-        if not self._session_log:
-            return None
+    try:
+        st = path.stat()
+        idle_secs = time.time() - st.st_mtime
+        age_secs = time.time() - st.st_ctime
 
-        try:
-            if not self._session_log.exists():
-                self._session_log = None
-                return None
-            # Only treat the log as stale if Roblox has been fully quiet for
-            # an extended period AND the file is significantly old.
-            # During loading, Roblox may not write for 30-90 seconds.
-            stat = self._session_log.stat()
-            idle_secs = time.time() - stat.st_mtime
-            age_secs  = time.time() - self._launch_time
-            if idle_secs > 120 and age_secs > 120:
-    # Truly stale — re-check for a newer log
-    newer = self._find_session_log()
-    if newer and newer != self._session_log:
-        old_log = self._session_log
+        # If the log seems stale, try finding a newer one
+        if idle_secs > 120 and age_secs > 120:
+            newer = self._find_session_log()
 
-        # clear incremental state for the previous log
-        if old_log:
-            self._seek_pos.pop(old_log, None)
-            self._read_buf.pop(old_log, None)
+            if newer and newer != self._session_log:
+                old_log = self._session_log
 
-        # switch to the new log
-        self._session_log = newer
+                # Clear state from previous log
+                if old_log is not None:
+                    self._seek_pos.pop(old_log, None)
+                    self._read_buf.pop(old_log, None)
 
-        # ensure fresh incremental state
-        self._seek_pos[newer] = 0
-        self._read_buf[newer] = ""
-        except OSError:
-            self._session_log = None
-            return None
+                # Switch to new log
+                self._session_log = newer
 
-        return self._read_biome_from(self._session_log)
+                # Reset incremental reader state
+                self._seek_pos[newer] = 0
+                self._read_buf[newer] = ""
+
+                path = newer
+
+    except Exception:
+        pass
+
+    return self._read_biome_from(path)
 
     def wait_for_biome(self, timeout: float = 75.0) -> Optional[str]:
         """Blocking wait (run in executor). Returns biome name or None on timeout.
