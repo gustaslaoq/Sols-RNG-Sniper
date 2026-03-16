@@ -668,10 +668,12 @@ class RobloxLogReader:
     # ─────────────────────────────────────────────
 
     def _find_session_log(self) -> Optional[Path]:
+
         if not ROBLOX_LOG_PATH.exists():
             return None
 
         logs = list(ROBLOX_LOG_PATH.glob("*.log"))
+
         if not logs:
             return None
 
@@ -701,6 +703,7 @@ class RobloxLogReader:
     # ─────────────────────────────────────────────
 
     def _read_biome_from(self, path: Path) -> Optional[str]:
+
         try:
             size = path.stat().st_size
         except OSError:
@@ -726,32 +729,33 @@ class RobloxLogReader:
         combined = prev_buf + new_text
 
         max_len = self.tail_bytes * 2
+
         if len(combined) > max_len:
             combined = combined[-max_len:]
 
         self._read_buf[path] = combined
 
-        # reverse scan (fast newest detection)
-        lines = combined.splitlines()
+        last_biome = None
 
-        for line in reversed(lines):
+        for line in combined.splitlines():
 
             if '"hoverText"' in line:
+
                 m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
+
                 if m:
-                    biome = m.group(1).strip().upper()
+                    candidate = m.group(1).strip().upper()
 
-            if biome and biome != "SOL'S RNG":
-                return biome
+                    if candidate not in ("SOL'S RNG", ""):
+                        last_biome = candidate
 
-            # fallback direct biome detection
             upper = line.upper()
 
             for biome in PATTERNS.BIOME_DIRECT:
                 if biome in upper:
-                    return biome
+                    last_biome = biome
 
-        return None
+        return last_biome
 
     # ─────────────────────────────────────────────
 
