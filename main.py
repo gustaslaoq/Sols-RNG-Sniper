@@ -2109,6 +2109,8 @@ class SplashScreen(QWidget):
             QTimer.singleShot(600, lambda: (self._step_timer.start(), self._step()))
 
     def _quit_for_update(self):
+        """Hard-exit after launching the build script.
+        Uses os._exit() so PySide6 cannot swallow the SystemExit inside a slot."""
         self._step_timer.stop()
         self._master_timer.stop()
         self.close()
@@ -2116,7 +2118,7 @@ class SplashScreen(QWidget):
             QApplication.instance().quit()
         except Exception:
             pass
-        sys.exit(0)
+        os._exit(0)
 
     def _begin_fade_out(self):
         self._step_timer.stop()
@@ -5298,11 +5300,13 @@ def main():
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor(C["white"]))
     app.setPalette(pal)
 
-    # Splash screen → show main window when done
+    # Splash screen → show main window only when splash finishes normally
+    # (not when it exits for an update — in that case os._exit(0) is called
+    #  before finished is ever emitted, so this callback never runs)
     splash = SplashScreen()
-    win    = MainWindow()
 
     def _on_splash_done():
+        win = MainWindow()
         win.show()
 
     splash.finished.connect(_on_splash_done)
