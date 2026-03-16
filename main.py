@@ -939,15 +939,11 @@ QToolTip {{
 #SidebarLogo {{ background-color: transparent; border: none; }}
 #NavBtn {{
     background-color: transparent; color: {C['muted']}; border: none;
-    border-left: 2px solid transparent;
     border-radius: 6px; padding: 6px 10px; text-align: left;
     font-weight: 800; min-height: 32px; max-height: 32px;
 }}
 #NavBtn:hover            {{ color: {C['text']}; background-color: transparent; }}
-#NavBtn[active="true"]   {{
-    background-color: transparent; color: {C['white']};
-    border-left: 2px solid {C['white']}; padding-left: 8px;
-}}
+#NavBtn[active="true"]   {{ background-color: transparent; color: {C['white']}; }}
 #ContentArea {{ background-color: {C['surface']}; }}
 #MetricCard {{
     background-color: {C['card']}; border: 1px solid {C['border']};
@@ -1934,9 +1930,6 @@ class _GlowLogoLabel(QLabel):
 
 
 class NavButton(QPushButton):
-    _H_IDLE   = 32
-    _H_ACTIVE = 38   # taller when selected
-
     def __init__(self, key: str, text: str):
         super().__init__()
         self.setObjectName("NavBtn")
@@ -1950,23 +1943,11 @@ class NavButton(QPushButton):
         self._apply()
         self.set_style(font_size=11, icon_size=18)
 
-        # height grow animation
-        self._h_anim  = QPropertyAnimation(self, b"maximumHeight")
-        self._h_anim.setDuration(180); self._h_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._h_anim2 = QPropertyAnimation(self, b"minimumHeight")
-        self._h_anim2.setDuration(180); self._h_anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-    def _animate_h(self, h: int):
-        cur = self.height()
-        for anim in (self._h_anim, self._h_anim2):
-            anim.stop(); anim.setStartValue(cur); anim.setEndValue(h); anim.start()
-
     def set_active(self, v: bool):
         self._active = v
         self.setProperty("active", v)
         self.style().unpolish(self); self.style().polish(self)
         self.setIcon(self._ic_act if v else self._ic)
-        self._animate_h(self._H_ACTIVE if v else self._H_IDLE)
         self.update()
 
     def show_text(self, wide: bool):
@@ -1974,7 +1955,6 @@ class NavButton(QPushButton):
             self._wide = wide; self._apply()
 
     def set_style(self, font_size: int, icon_size: int):
-        self._icon_sz = icon_size
         self.setIcon(self._ic_act if self._active else self._ic)
         self.setIconSize(QSize(icon_size, icon_size))
         self.setStyleSheet(f"font-size: {font_size}px; font-weight: 800;")
@@ -1986,25 +1966,6 @@ class NavButton(QPushButton):
         else:
             self.setText(""); self.setToolTip(self._text)
             self.setMinimumWidth(40); self.setMaximumWidth(40)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if not self._active or not self._wide:
-            return
-        # subtle horizontal glow behind active row
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        w, h = self.width(), self.height()
-        hg = QLinearGradient(0, 0, w, 0)
-        hg.setColorAt(0.0,  QColor(255, 255, 255, 0))
-        hg.setColorAt(0.15, QColor(255, 255, 255, 12))
-        hg.setColorAt(0.5,  QColor(255, 255, 255, 20))
-        hg.setColorAt(0.85, QColor(255, 255, 255, 12))
-        hg.setColorAt(1.0,  QColor(255, 255, 255, 0))
-        p.setBrush(hg)
-        p.drawRoundedRect(0, 2, w, h - 4, 5, 5)
-        p.end()
 
 
 class KeySequenceEdit(QLineEdit):
@@ -2731,8 +2692,8 @@ _PAGES = [
     ("bell",     "Notifications"),
     ("lock",     "Blacklist"),
     ("logs",     "Logs"),
-    ("zap",      "Plugins"),
     ("clock",    "History"),
+    ("zap",      "Plugins"),
 ]
 
 
@@ -2807,7 +2768,7 @@ class Sidebar(QFrame):
             b.installEventFilter(self)
             self._btns.append(b)
             lay.addWidget(b, alignment=Qt.AlignmentFlag.AlignHCenter)
-            lay.addSpacing(2)
+            lay.addSpacing(5)
 
         lay.addStretch()
 
@@ -2833,8 +2794,8 @@ class Sidebar(QFrame):
         self._active_idx = 0
 
     def set_plugins_visible(self, visible: bool):
-        if len(self._btns) > 5:
-            self._btns[5].setVisible(visible)
+        if len(self._btns) > 6:
+            self._btns[6].setVisible(visible)
 
     def _on_anim_finished(self):
         self._move_indicator_to(self._active_idx)
@@ -2937,10 +2898,13 @@ class Sidebar(QFrame):
             p.drawRoundedRect(4, int(self._anim_y), self.width() - 8, self._anim_h, 6, 6)
 
         # Animated white bar — follows click, not hover
+        # 2 px wide, vertically centred on the button, rounded caps
         if self._act_anim_y >= 0:
+            bar_h   = min(20, max(12, self._act_anim_h - 14))
+            bar_y   = int(self._act_anim_y) + (self._act_anim_h - bar_h) // 2
             p.setBrush(QColor(C["white"]))
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(4, int(self._act_anim_y) + 4, 2, self._act_anim_h - 8, 1, 1)
+            p.drawRoundedRect(3, bar_y, 2, bar_h, 1, 1)
 
         p.end()
 
@@ -4841,6 +4805,7 @@ class SnipeHistoryPage(QWidget):
 
     def set_history(self, history: "SnipeHistoryManager"):
         self._history = history
+        self._dirty   = True   # force rebuild on next showEvent
         self.refresh()
 
     def _build(self):
