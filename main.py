@@ -46,7 +46,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QPainter, QPen, QIcon, QPixmap, QCursor, QMouseEvent,
     QKeySequence, QShortcut, QPalette, QFont, QKeyEvent, QBrush, QImage,
-    QLinearGradient,
+    QLinearGradient, QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -871,16 +871,23 @@ THEMES = {
         "notif_yellow_border": "rgba(200,180,80,0.5)",
     },
     "light": {
-        "bg":      "#f5f5f5", "surface": "#efefef", "card":    "#ffffff",
-        "card2":   "#fafafa", "border":  "#e0e0e0", "border2": "#cccccc",
-        "text":    "#1a1a1a", "muted":   "#666666", "dim":     "#999999",
-        "white":   "#111111", "green":   "#007744", "green2":  "#009955",
-        "red":     "#c0392b", "red2":    "#e74c3c", "yellow":  "#cc9900",
-        "orange":  "#cc6600", "purple":  "#7744cc", "sel":     "#e8e8e8",
-        "notif_red_bg":     "rgba(180,60,60,0.10)",
-        "notif_red_border": "rgba(200,80,80,0.4)",
-        "notif_yellow_bg":  "rgba(180,160,60,0.10)",
-        "notif_yellow_border": "rgba(200,180,80,0.4)",
+        # Warm white — primary surfaces
+        "bg":      "#f9f8f6", "surface": "#f3f2ef", "card":    "#ffffff",
+        "card2":   "#faf9f7", "border":  "#e4e2dd", "border2": "#d5d2cc",
+        # Typography — high contrast dark ink
+        "text":    "#1c1b19", "muted":   "#7a7771", "dim":     "#a8a49f",
+        # "white" is the accent/highlight colour (used for active text, icons)
+        "white":   "#1c1b19",
+        # Accent colours — slightly desaturated to match warm base
+        "green":   "#1a7a4a", "green2":  "#1d9057",
+        "red":     "#b83228", "red2":    "#d43f32",
+        "yellow":  "#a87d00", "orange":  "#b85e00",
+        "purple":  "#6c44bb",
+        "sel":     "#ede9e3",
+        "notif_red_bg":     "rgba(184,50,40,0.08)",
+        "notif_red_border": "rgba(184,50,40,0.28)",
+        "notif_yellow_bg":  "rgba(168,125,0,0.08)",
+        "notif_yellow_border": "rgba(168,125,0,0.28)",
     },
 }
 
@@ -922,7 +929,7 @@ QToolTip {{
     min-height: {TITLEBAR_H}px; max-height: {TITLEBAR_H}px;
     font-size: 14px; font-family: 'Segoe UI Symbol', 'Segoe UI', Arial, sans-serif;
 }}
-#WinBtn:hover {{ background-color: #1e1e1e; color: {C['white']}; }}
+#WinBtn:hover {{ background-color: {C['sel']}; color: {C['white']}; }}
 #Sidebar {{
     background-color: {C['bg']};
     border-right: 1px solid {C['border']};
@@ -932,18 +939,27 @@ QToolTip {{
 #SidebarLogo {{ background-color: transparent; border: none; }}
 #NavBtn {{
     background-color: transparent; color: {C['muted']}; border: none;
+    border-left: 2px solid transparent;
     border-radius: 6px; padding: 6px 10px; text-align: left;
     font-weight: 800; min-height: 32px; max-height: 32px;
 }}
-#NavBtn:hover            {{ color: #aaaaaa; background-color: transparent; }}
-#NavBtn[active="true"]   {{ background-color: transparent; color: {C['white']}; padding-left: 10px; }}
+#NavBtn:hover            {{ color: {C['text']}; background-color: transparent; }}
+#NavBtn[active="true"]   {{
+    background-color: transparent; color: {C['white']};
+    border-left: 2px solid {C['white']}; padding-left: 8px;
+}}
 #ContentArea {{ background-color: {C['surface']}; }}
 #MetricCard {{
     background-color: {C['card']}; border: 1px solid {C['border']};
     border-radius: 10px; min-height: 86px; max-height: 86px;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}}
+#MetricCard:hover {{
+    background-color: {C['card2']}; border: 1px solid {C['border2']};
 }}
 #CardLabel  {{ color: {C['muted']}; font-size: 9px; font-weight: 700; letter-spacing: 2px; }}
-#CardValue  {{ color: {C['white']}; font-size: 24px; font-weight: 800; letter-spacing: -1px; }}
+#CardValue  {{ color: {C['white']}; font-size: 24px; font-weight: 800;
+               letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }}
 #CardUnit   {{ color: {C['dim']};   font-size: 11px; }}
 #BadgeON   {{ background-color: rgba(0,204,102,0.10); color: {C['green2']};
               border: 1px solid rgba(0,204,102,0.25); border-radius: 9px;
@@ -970,17 +986,17 @@ QLineEdit {{
     background-color: {C['card']}; border: 1px solid {C['border2']};
     border-radius: 6px; padding: 9px 12px;
     color: {C['text']}; font-size: 12px; min-height: 18px;
-    selection-background-color: #2a2a2a;
+    selection-background-color: {C['sel']};
 }}
-QLineEdit:focus    {{ border: 1px solid #3a3a3a; }}
+QLineEdit:focus    {{ border: 1px solid {C['border2']}; }}
 QLineEdit:disabled {{ color: {C['dim']}; background-color: {C['card2']}; }}
 QTextEdit {{
     background-color: {C['card']}; border: 1px solid {C['border2']};
     border-radius: 6px; padding: 9px 12px;
     color: {C['text']}; font-size: 12px;
-    selection-background-color: #2a2a2a;
+    selection-background-color: {C['sel']};
 }}
-QTextEdit:focus {{ border: 1px solid #3a3a3a; }}
+QTextEdit:focus {{ border: 1px solid {C['border2']}; }}
 QCheckBox {{
     color: {C['muted']}; font-size: 12px; spacing: 8px; min-height: 24px;
 }}
@@ -998,7 +1014,7 @@ QSpinBox {{
     border-radius: 6px; padding: 9px 12px;
     color: {C['text']}; font-size: 12px; min-width: 60px; min-height: 18px;
 }}
-QSpinBox:focus {{ border: 1px solid #3a3a3a; }}
+QSpinBox:focus {{ border: 1px solid {C['border2']}; }}
 QSpinBox::up-button, QSpinBox::down-button {{ background: transparent; border: none; width: 16px; }}
 QSpinBox::up-arrow,  QSpinBox::down-arrow  {{ image: none; width: 0; }}
 QComboBox {{
@@ -1006,7 +1022,7 @@ QComboBox {{
     border-radius: 6px; padding: 6px 12px;
     color: {C['text']}; font-size: 12px; min-height: 18px;
 }}
-QComboBox:focus {{ border: 1px solid #3a3a3a; }}
+QComboBox:focus {{ border: 1px solid {C['border2']}; }}
 QComboBox::drop-down {{ border: none; }}
 QComboBox QAbstractItemView {{
     background-color: {C['card']}; color: {C['text']};
@@ -1053,7 +1069,7 @@ QComboBox QAbstractItemView {{
     border: 1px solid {C['border']}; border-radius: 5px;
     padding: 5px 12px; font-size: 11px; min-height: 26px;
 }}
-#SmallBtn:hover {{ color: {C['text']}; border: 1px solid {C['border2']}; background-color: #181818; }}
+#SmallBtn:hover {{ color: {C['white']}; border: 1px solid {C['border2']}; background-color: {C['sel']}; }}
 #SmallDangerBtn {{
     background-color: transparent; color: {C['red2']};
     border: 1px solid rgba(231,76,60,0.2); border-radius: 5px;
@@ -1084,7 +1100,7 @@ QComboBox QAbstractItemView {{
 #ProfileListWidget::item:selected {{
     background-color: {C['sel']}; color: {C['white']};
 }}
-#HDivider {{ background-color: {C['border']}; max-height: 1px; }}
+#HDivider {{ background-color: transparent; max-height: 1px; }}
 #VDivider {{ background-color: {C['border']}; max-width: 1px; }}
 #ChannelRow {{
     background-color: {C['card2']}; border-bottom: 1px solid {C['border']};
@@ -1124,7 +1140,7 @@ QProgressBar::chunk {{
 SVG = {
     # ── Navigation / sidebar ──────────────────────────────────────────────────
     "home":          '<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
-    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
+    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>',
     "logs":          '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
     "bell":          '<path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>',
     "clock":         '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
@@ -1343,11 +1359,33 @@ def lbl(text: str, obj: str = "", css: str = "") -> QLabel:
     if css: w.setStyleSheet(css)
     return w
 
-def hdiv() -> QFrame:
-    d = QFrame()
-    d.setObjectName("HDivider")
-    d.setFrameShape(QFrame.Shape.HLine)
-    return d
+class _GradientHDivider(QFrame):
+    """Horizontal divider that fades from transparent at edges to border colour at centre."""
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("HDivider")
+        self.setFixedHeight(1)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        w = self.width()
+        col = QColor(C.get("border", "#1c1c1c"))
+        g = QLinearGradient(0, 0, w, 0)
+        g.setColorAt(0.0,  QColor(col.red(), col.green(), col.blue(), 0))
+        g.setColorAt(0.25, QColor(col.red(), col.green(), col.blue(), 180))
+        g.setColorAt(0.5,  QColor(col.red(), col.green(), col.blue(), 220))
+        g.setColorAt(0.75, QColor(col.red(), col.green(), col.blue(), 180))
+        g.setColorAt(1.0,  QColor(col.red(), col.green(), col.blue(), 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawRect(0, 0, w, 1)
+        p.end()
+
+
+def hdiv() -> _GradientHDivider:
+    return _GradientHDivider()
 
 def vdiv() -> QFrame:
     d = QFrame()
@@ -1830,10 +1868,15 @@ class StatusBadge(QLabel):
 
 
 class MetricCard(QFrame):
+    _BASE_H  = 86
+    _HOVER_H = 92      # slightly taller on hover
+
     def __init__(self, label: str, value: str = "—", unit: str = ""):
         super().__init__()
         self.setObjectName("MetricCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._BASE_H)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         lay = QVBoxLayout(self); lay.setContentsMargins(16, 10, 16, 10); lay.setSpacing(3)
         self._v = lbl(value, "CardValue")
         lay.addWidget(lbl(label.upper(), "CardLabel"))
@@ -1843,32 +1886,97 @@ class MetricCard(QFrame):
         row.addStretch()
         lay.addLayout(row)
 
+        # height animation
+        self._h_anim = QPropertyAnimation(self, b"maximumHeight")
+        self._h_anim.setDuration(130)
+        self._h_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._h_anim2 = QPropertyAnimation(self, b"minimumHeight")
+        self._h_anim2.setDuration(130)
+        self._h_anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
+
     def set_value(self, v: str):
         self._v.setText(v)
 
+    def _animate_to(self, h: int):
+        for anim, prop in ((self._h_anim, b"maximumHeight"), (self._h_anim2, b"minimumHeight")):
+            anim.stop()
+            anim.setStartValue(self.height())
+            anim.setEndValue(h)
+            anim.start()
+
+    def enterEvent(self, event):
+        self._animate_to(self._HOVER_H)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._animate_to(self._BASE_H)
+        super().leaveEvent(event)
+
+
+class _GlowLogoLabel(QLabel):
+    """QLabel with a soft radial glow painted behind the logo."""
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h   = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        gr     = min(w, h) * 0.68
+        rg = QRadialGradient(cx, cy, gr)
+        rg.setColorAt(0.0,  QColor(255, 255, 255, 26))
+        rg.setColorAt(0.4,  QColor(255, 255, 255, 13))
+        rg.setColorAt(0.75, QColor(255, 255, 255, 4))
+        rg.setColorAt(1.0,  QColor(255, 255, 255, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(rg)
+        p.drawEllipse(int(cx - gr), int(cy - gr), int(gr * 2), int(gr * 2))
+        p.end()
+        super().paintEvent(event)
+
 
 class NavButton(QPushButton):
+    _H_IDLE   = 32
+    _H_ACTIVE = 38   # taller when selected
+
     def __init__(self, key: str, text: str):
         super().__init__()
         self.setObjectName("NavBtn")
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setProperty("active", False)
-        self._text = text
-        self._ic   = _svg_icon(key)
-        self._wide = False
+        self._text   = text
+        self._ic     = _svg_icon(key)
+        self._ic_act = _svg_icon(key, "#ffffff")
+        self._wide   = False
+        self._active = False
         self._apply()
         self.set_style(font_size=11, icon_size=18)
 
+        # height grow animation
+        self._h_anim  = QPropertyAnimation(self, b"maximumHeight")
+        self._h_anim.setDuration(180); self._h_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._h_anim2 = QPropertyAnimation(self, b"minimumHeight")
+        self._h_anim2.setDuration(180); self._h_anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def _animate_h(self, h: int):
+        cur = self.height()
+        for anim in (self._h_anim, self._h_anim2):
+            anim.stop(); anim.setStartValue(cur); anim.setEndValue(h); anim.start()
+
     def set_active(self, v: bool):
+        self._active = v
         self.setProperty("active", v)
         self.style().unpolish(self); self.style().polish(self)
+        self.setIcon(self._ic_act if v else self._ic)
+        self._animate_h(self._H_ACTIVE if v else self._H_IDLE)
+        self.update()
 
     def show_text(self, wide: bool):
         if wide != self._wide:
             self._wide = wide; self._apply()
 
     def set_style(self, font_size: int, icon_size: int):
-        self.setIcon(self._ic); self.setIconSize(QSize(icon_size, icon_size))
+        self._icon_sz = icon_size
+        self.setIcon(self._ic_act if self._active else self._ic)
+        self.setIconSize(QSize(icon_size, icon_size))
         self.setStyleSheet(f"font-size: {font_size}px; font-weight: 800;")
 
     def _apply(self):
@@ -1878,6 +1986,25 @@ class NavButton(QPushButton):
         else:
             self.setText(""); self.setToolTip(self._text)
             self.setMinimumWidth(40); self.setMaximumWidth(40)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._active or not self._wide:
+            return
+        # subtle horizontal glow behind active row
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        w, h = self.width(), self.height()
+        hg = QLinearGradient(0, 0, w, 0)
+        hg.setColorAt(0.0,  QColor(255, 255, 255, 0))
+        hg.setColorAt(0.15, QColor(255, 255, 255, 12))
+        hg.setColorAt(0.5,  QColor(255, 255, 255, 20))
+        hg.setColorAt(0.85, QColor(255, 255, 255, 12))
+        hg.setColorAt(1.0,  QColor(255, 255, 255, 0))
+        p.setBrush(hg)
+        p.drawRoundedRect(0, 2, w, h - 4, 5, 5)
+        p.end()
 
 
 class KeySequenceEdit(QLineEdit):
@@ -1908,47 +2035,25 @@ class _SplashBarWidget(QWidget):
         super().__init__(parent)
         self._value = 0.0
         self._total = 1
-        self.setFixedHeight(5)
+        self.setFixedHeight(4)
         self.setStyleSheet("background: transparent;")
 
     def set_progress(self, value: float, total: int):
-        self._value = value
-        self._total = total
+        self._value  = value
+        self._total  = total
         self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
-        h = self.height()
-        pct    = min(self._value, self._total) / max(1, self._total)
-        filled = int(w * pct)
-
+        filled = int(w * min(self._value, self._total) / max(1, self._total))
         p.setPen(Qt.PenStyle.NoPen)
-
-        # track
-        p.setBrush(QColor("#141414"))
-        p.drawRoundedRect(0, 1, w, h - 2, 1, 1)
-
+        p.setBrush(QColor("#1c1c1c"))
+        p.drawRoundedRect(0, 0, w, 4, 2, 2)
         if filled > 0:
-            # outer glow — wide soft halo
-            for radius, alpha in [(10, 6), (6, 12), (3, 22)]:
-                glow = QColor(255, 255, 255, alpha)
-                p.setBrush(glow)
-                p.drawRoundedRect(0, h // 2 - radius, filled, radius * 2, radius, radius)
-
-            # bar fill — white → light grey
-            grad = QLinearGradient(0, 0, filled, 0)
-            grad.setColorAt(0.0, QColor("#e8e8e8"))
-            grad.setColorAt(1.0, QColor("#ffffff"))
-            p.setBrush(grad)
-            p.drawRoundedRect(0, 1, filled, h - 2, 1, 1)
-
-            # bright leading dot
-            dot_r = h - 1
             p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(filled - dot_r // 2, (h - dot_r) // 2, dot_r, dot_r)
-
+            p.drawRoundedRect(0, 0, filled, 4, 2, 2)
         p.end()
 
 
@@ -1957,323 +2062,191 @@ class SplashScreen(QWidget):
     _update_result = Signal(bool, str)
 
     _TASKS = [
-        "Initializing runtime environment...",
-        "Checking for updates...",
-        "Loading profiles and configuration...",
-        "Preparing snipe engine...",
+        "Initializing runtime environment…",
+        "Checking for updates…",
+        "Loading profiles and configuration…",
+        "Preparing snipe engine…",
         "Ready.",
     ]
 
-    # window
-    _W = 520
-    _H = 320
-
-    # logo
-    _LOGO_SZ   = 88
-    _LOGO_GAP  = 8           # gap between logo right edge and "SLAOQ" left edge
-    _LOGO_Y    = 96          # top-y of logo row
-
-    # subtitle
-    _SUB_RISE  = 20          # px the subtitle rises during animation
-
-    # bar
-    _BAR_Y     = 270
-    _BAR_PAD   = 52
-
-    # speeds (increment per 16 ms frame)
-    _FADE_IN_SPD   = 0.038   # ~420 ms
-    _SLIDE_SPD     = 0.013   # ~1250 ms  (slower, more deliberate)
-    _BRAND_SPD     = 0.022   # ~730 ms   (brand slides in after logo lands)
-    _SUB_SPD       = 0.018   # ~890 ms
-    _BOTTOM_SPD    = 0.028   # ~570 ms
-    _FADE_OUT_SPD  = 0.048   # ~330 ms
+    _HERO_H     = 118
+    _HERO_Y     = 68
+    _SLIDE_DIST = 28
+    _BOTTOM_Y   = 232
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(self._W, self._H)
+        self.setFixedSize(420, 280)
 
         screen = QApplication.primaryScreen().geometry()
-        self.move(screen.center().x() - self._W // 2,
-                  screen.center().y() - self._H // 2)
+        self.move(screen.center().x() - 210, screen.center().y() - 140)
 
         self._opacity      = 0.0
-        self._phase        = 0
-        self._logo_t       = 0.0
-        self._brand_t      = 0.0
-        self._sub_t        = 0.0
+        self._hero_t       = 0.0
         self._bottom_alpha = 0.0
         self._bar_value    = 0.0
         self._bar_target   = 0.0
         self._task_idx     = 0
-
-        # computed in _build
-        self._logo_cx_start = self._W // 2
-        self._logo_cx_end   = 0
-        self._brand_x_end   = 0
-        self._brand_y       = 0
-        self._sub_y_start   = 0
-        self._sub_y_end     = 0
+        self._hero_done    = False
 
         self._update_result.connect(self._on_check_done)
         self._build()
 
     def _build(self):
-        W, H = self._W, self._H
-        sz   = self._LOGO_SZ
-        gap  = self._LOGO_GAP
-        ly   = self._LOGO_Y
-
-        # background card
         self._root = QWidget(self)
         self._root.setObjectName("SplashRoot")
-        self._root.setGeometry(0, 0, W, H)
+        self._root.setGeometry(0, 0, 420, 280)
         self._root.setStyleSheet(
             "QWidget#SplashRoot{"
             "background-color:#000000;"
-            "border:1px solid #181818;"
-            "border-radius:20px;}")
+            "border:1px solid #1c1c1c;"
+            "border-radius:16px;}")
 
-        # ── glow canvas (painted separately, sits behind everything) ──────────
-        # We use a QLabel with no content as glow layer — actual glow drawn in
-        # _GlowWidget below, added as a sibling of _root
-        self._glow = _SplashGlowWidget(self, sz, gap, ly)
-        self._glow.setGeometry(0, 0, W, H)
-        self._glow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._glow.hide()     # shown once logo reaches final position
+        pad     = 40
+        inner_w = 420 - pad * 2
 
-        # ── logo ──────────────────────────────────────────────────────────────
-        self._logo_lbl = QLabel(self._root)
-        self._logo_lbl.setFixedSize(sz, sz)
+        self._hero_w = QWidget(self._root)
+        self._hero_w.setGeometry(pad, self._HERO_Y + self._SLIDE_DIST, inner_w, self._HERO_H)
+        self._hero_w.setStyleSheet("background:transparent;")
+        hl = QVBoxLayout(self._hero_w)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(10)
+        hl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+
+        self._logo_lbl = QLabel()
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo_lbl.setFixedSize(64, 64)
         self._logo_lbl.setStyleSheet("background:transparent;")
         if LOGO_PATH.exists():
             px = QPixmap(str(LOGO_PATH)).scaled(
-                sz, sz,
+                64, 64,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self._logo_lbl.setPixmap(px)
-        self._logo_lbl.move(self._logo_cx_start - sz // 2, ly)
+        hl.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # ── "SLAOQ" brand ─────────────────────────────────────────────────────
-        self._brand_lbl = QLabel("SLAOQ", self._root)
-        self._brand_lbl.setStyleSheet(
-            "color:#ffffff;font-size:34px;font-weight:800;"
-            "letter-spacing:4px;background:transparent;")
-        self._brand_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._brand_lbl.adjustSize()
-        bw = self._brand_lbl.width()
-        bh = self._brand_lbl.height()
+        self._name_lbl = QLabel(APP_NAME)
+        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._name_lbl.setStyleSheet(
+            "color:#ffffff;font-size:11px;font-weight:700;"
+            "letter-spacing:3px;background:transparent;")
+        hl.addWidget(self._name_lbl)
 
-        # centre the [logo + gap + brand] group in the window
-        group_w = sz + gap + bw
-        gx      = (W - group_w) // 2          # left edge of group
-        self._logo_cx_end  = gx + sz // 2     # logo centre-x when settled
-        self._brand_x_end  = gx + sz + gap    # brand left edge when settled
-        self._brand_y      = ly + (sz - bh) // 2
+        self._ver_lbl = QLabel(f"v{APP_VERSION}")
+        self._ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._ver_lbl.setStyleSheet(
+            "color:#555555;font-size:10px;letter-spacing:1px;background:transparent;")
+        hl.addWidget(self._ver_lbl)
 
-        self._brand_lbl.move(self._brand_x_end, self._brand_y)
-        self._brand_eff = QGraphicsOpacityEffect(self._brand_lbl)
-        self._brand_eff.setOpacity(0.0)
-        self._brand_lbl.setGraphicsEffect(self._brand_eff)
+        self._bottom_w = QWidget(self._root)
+        self._bottom_w.setGeometry(pad, self._BOTTOM_Y, inner_w, 32)
+        self._bottom_w.setStyleSheet("background:transparent;")
+        bl = QVBoxLayout(self._bottom_w)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(7)
 
-        # pass final positions to glow widget
-        self._glow.set_positions(
-            logo_cx=self._logo_cx_end,
-            logo_y=ly, logo_sz=sz,
-            brand_x=self._brand_x_end, brand_y=self._brand_y,
-            brand_w=bw, brand_h=bh)
+        self._bar_w = _SplashBarWidget()
+        bl.addWidget(self._bar_w)
 
-        # ── subtitle ─────────────────────────────────────────────────────────
-        self._sub_y_end   = ly + sz + 16
-        self._sub_y_start = self._sub_y_end + self._SUB_RISE
-
-        self._sub_lbl = QLabel("SOL'S RNG SNIPER", self._root)
-        self._sub_lbl.setFixedWidth(W)
-        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._sub_lbl.setStyleSheet(
-            "color:#4a4a4a;font-size:10px;font-weight:700;"
-            "letter-spacing:5px;background:transparent;")
-        self._sub_lbl.move(0, self._sub_y_start)
-
-        self._sub_eff = QGraphicsOpacityEffect(self._sub_lbl)
-        self._sub_eff.setOpacity(0.0)
-        self._sub_lbl.setGraphicsEffect(self._sub_eff)
-
-        # ── bottom bar + label ────────────────────────────────────────────────
-        pad   = self._BAR_PAD
-        bar_w = W - pad * 2
-
-        self._bottom_container = QWidget(self._root)
-        self._bottom_container.setGeometry(0, self._BAR_Y - 8, W, 48)
-        self._bottom_container.setStyleSheet("background:transparent;")
-
-        self._bar_w = _SplashBarWidget(self._bottom_container)
-        self._bar_w.setGeometry(pad, 8, bar_w, 5)
-
-        self._task_lbl = QLabel(self._TASKS[0], self._bottom_container)
-        self._task_lbl.setGeometry(pad, 20, bar_w, 16)
+        self._task_lbl = QLabel(self._TASKS[0])
         self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._task_lbl.setStyleSheet(
-            "color:#383838;font-size:10px;letter-spacing:0.3px;background:transparent;")
+        self._task_lbl.setStyleSheet("color:#555555;font-size:10px;background:transparent;")
+        bl.addWidget(self._task_lbl)
 
-        self._bottom_eff = QGraphicsOpacityEffect(self._bottom_container)
+        self._bottom_eff = QGraphicsOpacityEffect(self._bottom_w)
         self._bottom_eff.setOpacity(0.0)
-        self._bottom_container.setGraphicsEffect(self._bottom_eff)
+        self._bottom_w.setGraphicsEffect(self._bottom_eff)
 
-        # ── timers ────────────────────────────────────────────────────────────
         self._master_timer = QTimer(self)
         self._master_timer.setInterval(16)
         self._master_timer.timeout.connect(self._tick)
 
         self._step_timer = QTimer(self)
-        self._step_timer.setInterval(680)
+        self._step_timer.setInterval(560)
         self._step_timer.timeout.connect(self._step)
-
-    # ── easing ────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _ease_out_expo(t):
-        return 1.0 if t >= 1.0 else 1.0 - pow(2.0, -10.0 * t)
-
-    @staticmethod
-    def _ease_out_quint(t):
-        return 1.0 - (1.0 - t) ** 5
-
-    @staticmethod
-    def _ease_in_out_sine(t):
-        import math
-        return -(math.cos(math.pi * t) - 1.0) / 2.0
-
-    # ── tick ──────────────────────────────────────────────────────────────────
-
-    def _tick(self):
-        # window fade-in runs continuously until done
-        if self._opacity < 1.0:
-            self._opacity = min(1.0, self._opacity + self._FADE_IN_SPD)
-            self.setWindowOpacity(self._opacity)
-
-        if self._phase == 0:
-            # ── phase 0a: logo slides from centre to left ─────────────────────
-            self._logo_t = min(1.0, self._logo_t + self._SLIDE_SPD)
-            e  = self._ease_out_expo(self._logo_t)
-            sz = self._LOGO_SZ
-
-            cx = self._logo_cx_start + (self._logo_cx_end - self._logo_cx_start) * e
-            self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
-
-            # logo glow fades in during second half of slide
-            if self._logo_t > 0.5:
-                glow_alpha = (self._logo_t - 0.5) / 0.5
-                self._glow.set_logo_only(True)
-                self._glow.show()
-                self._glow.raise_()
-                self._glow.set_alpha(glow_alpha)
-                self._glow.update()
-
-            if self._logo_t >= 1.0:
-                # logo has landed — snap and begin brand animation
-                self._logo_lbl.move(self._logo_cx_end - sz // 2, self._LOGO_Y)
-                self._glow.set_logo_only(True)
-                self._glow.set_alpha(1.0)
-                self._glow.update()
-                self._phase = 0.5   # brand phase
-
-        elif self._phase == 0.5:
-            # ── phase 0b: brand slides in from left edge of its final position ─
-            self._brand_t = min(1.0, self._brand_t + self._BRAND_SPD)
-            e = self._ease_out_quint(self._brand_t)
-            slide_off = int(22 * (1.0 - e))
-            self._brand_lbl.move(self._brand_x_end - slide_off, self._brand_y)
-            self._brand_eff.setOpacity(e)
-
-            # brand glow fades in with brand
-            self._glow.set_logo_only(False)
-            self._glow.set_alpha(1.0)
-            self._glow.update()
-
-            if self._brand_t >= 1.0:
-                self._brand_lbl.move(self._brand_x_end, self._brand_y)
-                self._brand_eff.setOpacity(1.0)
-                self._phase = 1
-
-        elif self._phase == 1:
-            # ── subtitle rises ────────────────────────────────────────────────
-            self._sub_t = min(1.0, self._sub_t + self._SUB_SPD)
-            e = self._ease_out_quint(self._sub_t)
-            y = int(self._sub_y_start + (self._sub_y_end - self._sub_y_start) * e)
-            self._sub_lbl.move(0, y)
-            self._sub_eff.setOpacity(self._ease_in_out_sine(self._sub_t))
-
-            if self._sub_t >= 1.0:
-                self._sub_lbl.move(0, self._sub_y_end)
-                self._sub_eff.setOpacity(1.0)
-                self._phase = 2
-                self._step_timer.start()
-
-        elif self._phase == 2:
-            # ── bar fades in, fills ───────────────────────────────────────────
-            if self._bottom_alpha < 1.0:
-                self._bottom_alpha = min(1.0, self._bottom_alpha + self._BOTTOM_SPD)
-                self._bottom_eff.setOpacity(self._ease_in_out_sine(self._bottom_alpha))
-
-            diff = self._bar_target - self._bar_value
-            if abs(diff) > 0.001:
-                self._bar_value += diff * 0.07
-                self._bar_w.set_progress(self._bar_value, len(self._TASKS))
-
-    # ── step / update ─────────────────────────────────────────────────────────
 
     def start(self):
         self.setWindowOpacity(0.0)
         self.show()
-        self._launch_update_check()
         self._master_timer.start()
+
+    def _tick(self):
+        if self._opacity < 1.0:
+            self._opacity = min(1.0, self._opacity + 0.065)
+            self.setWindowOpacity(self._opacity)
+
+        if self._hero_t < 1.0:
+            self._hero_t = min(1.0, self._hero_t + 0.055)
+            ease   = 1.0 - self._hero_t
+            offset = int(self._SLIDE_DIST * (ease ** 2))
+            self._hero_w.move(40, self._HERO_Y + offset)
+            if self._hero_t >= 1.0:
+                self._hero_w.move(40, self._HERO_Y)
+                self._hero_done = True
+                self._step_timer.start()
+
+        if self._hero_done and self._bottom_alpha < 1.0:
+            self._bottom_alpha = min(1.0, self._bottom_alpha + 0.055)
+            self._bottom_eff.setOpacity(self._bottom_alpha)
+
+        if self._hero_done:
+            diff = self._bar_target - self._bar_value
+            if abs(diff) > 0.003:
+                self._bar_value += diff * 0.10
+                self._bar_w.set_progress(self._bar_value, len(self._TASKS))
 
     def _step(self):
         self._task_idx += 1
         self._bar_target = float(self._task_idx)
+
         if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
+
         if self._task_idx == 1:
             self._step_timer.stop()
+            self._launch_update_check()
             return
+
         if self._task_idx >= len(self._TASKS):
             self._step_timer.stop()
-            QTimer.singleShot(1000, self._begin_fade_out)
+            QTimer.singleShot(600, self._begin_fade_out)
 
     def _launch_update_check(self):
         sig = self._update_result
+
         def _worker():
             found, sha = _needs_update()
             sig.emit(found, sha)
+
         threading.Thread(target=_worker, daemon=True, name="SplashUpdateCheck").start()
 
     def _on_check_done(self, found: bool, sha: str):
         if found:
-            self._task_lbl.setText(f"Update found ({sha}) — launching build...")
+            self._task_lbl.setText(f"Update found ({sha}) — launching build…")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1500, lambda: self._do_update(sha))
+            QTimer.singleShot(1000, lambda: self._do_update(sha))
         else:
             self._step_timer.start()
             self._step()
 
     def _do_update(self, sha: str):
-        self._task_lbl.setText("Build pipeline launched — closing app...")
+        self._task_lbl.setText("Build pipeline launched — closing app…")
         ok = _launch_bat_update()
         if ok:
             self._quit_for_update()
         else:
-            self._task_lbl.setText("build.bat not found — skipping update...")
+            self._task_lbl.setText("build.bat not found — skipping update…")
             self._bar_target = 0.0
             self._bar_value  = 0.0
             self._task_idx   = 1
-            QTimer.singleShot(700, lambda: (self._step_timer.start(), self._step()))
+            QTimer.singleShot(600, lambda: (self._step_timer.start(), self._step()))
 
     def _quit_for_update(self):
+        """Hard-exit after launching the build script.
+        Uses os._exit() so PySide6 cannot swallow the SystemExit inside a slot."""
         self._step_timer.stop()
         self._master_timer.stop()
         self.close()
@@ -2285,14 +2258,13 @@ class SplashScreen(QWidget):
 
     def _begin_fade_out(self):
         self._step_timer.stop()
-        self._phase = 3
         self._fade_out_timer = QTimer(self)
         self._fade_out_timer.setInterval(16)
         self._fade_out_timer.timeout.connect(self._tick_fade_out)
         self._fade_out_timer.start()
 
     def _tick_fade_out(self):
-        self._opacity = max(0.0, self._opacity - self._FADE_OUT_SPD)
+        self._opacity = max(0.0, self._opacity - 0.085)
         self.setWindowOpacity(self._opacity)
         if self._opacity <= 0.0:
             self._fade_out_timer.stop()
@@ -2301,89 +2273,7 @@ class SplashScreen(QWidget):
             self.close()
             self.finished.emit()
 
-
-class _SplashGlowWidget(QWidget):
-    """Transparent overlay that paints soft glow halos behind the white text/logo."""
-
-    def __init__(self, parent, sz, gap, ly):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._alpha     = 0.0
-        self._logo_only = True   # True = only draw logo glow; False = draw both
-        self._lx        = 0;  self._ly  = ly;  self._lsz = sz
-        self._bx        = 0;  self._by  = 0;   self._bw  = 0;  self._bh = 0
-
-    def set_logo_only(self, v: bool):
-        self._logo_only = v
-
-    def set_positions(self, logo_cx, logo_y, logo_sz,
-                      brand_x, brand_y, brand_w, brand_h):
-        self._logo_cx = logo_cx
-        self._ly      = logo_y
-        self._lsz     = logo_sz
-        self._bx      = brand_x
-        self._by      = brand_y
-        self._bw      = brand_w
-        self._bh      = brand_h
-
-    def set_alpha(self, a: float):
-        self._alpha = max(0.0, min(1.0, a))
-
-    def paintEvent(self, event):
-        if self._alpha <= 0.01:
-            return
-        from PySide6.QtGui import QRadialGradient
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-
-        a = self._alpha
-
-        # ── logo glow: true radial gradient — fully transparent at edge ───────
-        cx   = float(self._logo_cx)
-        cy   = float(self._ly + self._lsz // 2)
-        glow_r = self._lsz * 1.1          # halo radius ~110% of logo radius
-
-        rg = QRadialGradient(cx, cy, glow_r)
-        rg.setColorAt(0.0,  QColor(255, 255, 255, int(38 * a)))
-        rg.setColorAt(0.35, QColor(255, 255, 255, int(22 * a)))
-        rg.setColorAt(0.65, QColor(255, 255, 255, int(9  * a)))
-        rg.setColorAt(1.0,  QColor(255, 255, 255, 0))
-        p.setBrush(rg)
-        p.drawEllipse(int(cx - glow_r), int(cy - glow_r),
-                      int(glow_r * 2),  int(glow_r * 2))
-
-        # ── brand text glow: linear gradient (only when brand is visible) ──────
-        if self._logo_only:
-            p.end()
-            return
-
-        # ── brand text glow: linear gradient fading to transparent at edges ───
-        # Use a wide soft rect that dissolves at all four edges.
-        bx  = float(self._bx)
-        by  = float(self._by)
-        bw  = float(self._bw)
-        bh  = float(self._bh)
-        pad = 28.0          # extra spread beyond the text bounding box
-
-        # horizontal gradient: transparent → white-ish → transparent
-        hg = QLinearGradient(bx - pad, 0, bx + bw + pad, 0)
-        hg.setColorAt(0.0,  QColor(0, 0, 0, 0))
-        hg.setColorAt(0.15, QColor(255, 255, 255, int(16 * a)))
-        hg.setColorAt(0.5,  QColor(255, 255, 255, int(24 * a)))
-        hg.setColorAt(0.85, QColor(255, 255, 255, int(16 * a)))
-        hg.setColorAt(1.0,  QColor(0, 0, 0, 0))
-        p.setBrush(hg)
-        spread = pad * 1.2
-        p.drawRoundedRect(
-            int(bx - spread), int(by - 10),
-            int(bw + spread * 2), int(bh + 20),
-            8, 8)
-
-        p.end()
-
-
-
+# AUTO-UPDATER
 
 def _get_exe_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -2673,7 +2563,7 @@ class Sidebar(QFrame):
         lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # --- Área da Logo ---
-        self._logo = QLabel()
+        self._logo = _GlowLogoLabel()
         self._logo.setObjectName("SidebarLogo")
         self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Tamanho inicial compatível com sidebar expandida
@@ -3130,12 +3020,18 @@ class DashboardPage(QWidget):
     def append(self, e: LogEntry, dev: bool = False):
         if e.dev_only and not dev:
             return
-        clr = {
-            LogLevel.SUCCESS: C["green2"], LogLevel.ERROR:  C["red2"],
-            LogLevel.WARN:    C["yellow"], LogLevel.DEBUG:  C["purple"],
-            LogLevel.SNIPE:   C["orange"],
-        }.get(e.level, C["green"])
-        html = (f'<span style="color:{C["dim"]}">[{e.ts}]</span> '
+        clr, tag, bg_rgba = {
+            LogLevel.SUCCESS: (C["green2"], "OK",  "rgba(0,204,102,0.10)"),
+            LogLevel.ERROR:   (C["red2"],   "ERR", "rgba(231,76,60,0.10)"),
+            LogLevel.WARN:    (C["yellow"], "WRN", "rgba(255,204,0,0.08)"),
+            LogLevel.DEBUG:   (C["purple"], "DBG", "rgba(170,102,255,0.07)"),
+            LogLevel.SNIPE:   (C["orange"], "SNP", "rgba(255,136,0,0.10)"),
+        }.get(e.level, (C["green"], "INF", "rgba(0,255,136,0.07)"))
+        pill = (f'<span style="background:{bg_rgba};color:{clr};'
+                f'font-weight:800;font-size:9px;letter-spacing:1px;'
+                f'border-radius:3px;padding:1px 5px;">{tag}</span>')
+        html = (f'<span style="color:{C["dim"]};font-size:10px">{e.ts}</span> '
+                f'{pill} '
                 f'<span style="color:{clr}">{e.message}</span>')
         self.mini.append(html)
         doc = self.mini.document()
@@ -4252,16 +4148,19 @@ class LogsPage(QWidget):
     def _render(self, e: LogEntry):
         if self._filter_level and e.level != self._filter_level:
             return
-        clr, tag = {
-            LogLevel.INFO:    (C["green"],  "INF"),
-            LogLevel.SUCCESS: (C["green2"], "OK "),
-            LogLevel.WARN:    (C["yellow"], "WRN"),
-            LogLevel.ERROR:   (C["red2"],   "ERR"),
-            LogLevel.DEBUG:   (C["purple"], "DBG"),
-            LogLevel.SNIPE:   (C["orange"], "SNP"),
-        }.get(e.level, (C["green"], "   "))
-        html = (f'<span style="color:{C["dim"]}">[{e.ts}]</span> '
-                f'<span style="color:{clr};font-weight:bold">[{tag}]</span> '
+        clr, tag, bg_rgba = {
+            LogLevel.INFO:    (C["green"],  "INF", "rgba(0,255,136,0.07)"),
+            LogLevel.SUCCESS: (C["green2"], "OK",  "rgba(0,204,102,0.10)"),
+            LogLevel.WARN:    (C["yellow"], "WRN", "rgba(255,204,0,0.08)"),
+            LogLevel.ERROR:   (C["red2"],   "ERR", "rgba(231,76,60,0.10)"),
+            LogLevel.DEBUG:   (C["purple"], "DBG", "rgba(170,102,255,0.07)"),
+            LogLevel.SNIPE:   (C["orange"], "SNP", "rgba(255,136,0,0.10)"),
+        }.get(e.level, (C["green"], "INF", "rgba(0,255,136,0.07)"))
+        pill = (f'<span style="background:{bg_rgba};color:{clr};'
+                f'font-weight:800;font-size:9px;letter-spacing:1px;'
+                f'border-radius:3px;padding:1px 5px;">{tag}</span>')
+        html = (f'<span style="color:{C["dim"]};font-size:10px">{e.ts}</span> '
+                f'{pill} '
                 f'<span style="color:{clr}">{e.message}</span>')
         self._con.append(html)
         self._cnt += 1
