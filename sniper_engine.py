@@ -741,13 +741,8 @@ class RobloxLogReader:
                 if m:
                     biome = m.group(1).strip().upper()
 
-                    if biome not in (
-                        "SOL'S RNG",
-                        "IN MAIN MENU",
-                        "ROBLOX",
-                        "",
-                    ):
-                        return biome
+            if biome and biome != "SOL'S RNG":
+                return biome
 
             # fallback direct biome detection
             upper = line.upper()
