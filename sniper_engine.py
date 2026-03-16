@@ -644,46 +644,47 @@ class ProcessManager:
 
 class RobloxLogReader:
     """
-    Session-aware Roblox log reader with incremental (seek-tracked) reading.
+    Session-aware Roblox log reader with robust incremental reading.
 
-    Instead of re-reading the whole tail on every poll, we track the last
-    read byte position per log file and only read newly appended data.
-    This significantly reduces I/O on large log files.
+    Improvements:
+    - Correct offset initialization (never skips early biome lines)
+    - Safe log switching with proper state reset
+    - Stable rolling buffer preventing pattern splits
     """
 
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
-        self.tail_bytes       = tail_bytes
-        self._launch_time:    float         = 0.0
-        self._session_log:    Optional[Path] = None
-        # ── incremental reading state ─────────────────────────────────────────
-        # Maps log path → last byte offset successfully read
-        self._seek_pos:       dict[Path, int] = {}
-        # Accumulates partial text between reads so biome patterns aren't split
-        self._read_buf:       dict[Path, str]  = {}
+        self.tail_bytes = tail_bytes
+        self._launch_time: float = 0.0
+        self._session_log: Optional[Path] = None
+
+        # incremental state
+        self._seek_pos: dict[Path, int] = {}
+        self._read_buf: dict[Path, str] = {}
 
     def mark_launch(self):
-        self._launch_time  = time.time()
-        self._session_log  = None
+        self._launch_time = time.time()
+        self._session_log = None
         self._seek_pos.clear()
         self._read_buf.clear()
 
     def reset_session(self):
-        self._launch_time  = 0.0
-        self._session_log  = None
+        self._launch_time = 0.0
+        self._session_log = None
         self._seek_pos.clear()
         self._read_buf.clear()
 
-    # ── private helpers ───────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────
 
     def _find_session_log(self) -> Optional[Path]:
         if not ROBLOX_LOG_PATH.exists():
             return None
+
         logs = list(ROBLOX_LOG_PATH.glob("*.log"))
         if not logs:
             return None
 
-        # Gather stats once
-        stat_map: list[tuple[Path, float, float]] = []  # (path, mtime, ctime)
+        stat_map = []
+
         for p in logs:
             try:
                 s = p.stat()
@@ -694,9 +695,6 @@ class RobloxLogReader:
         if not stat_map:
             return None
 
-        # Primary: files whose mtime is recent (written-to after we marked launch).
-        # Use a 30-second slack because Roblox may have been writing just before
-        # mark_launch() was called, and the new session data starts immediately after.
         window = self._launch_time - 30.0
         recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
 
@@ -704,46 +702,51 @@ class RobloxLogReader:
             recent.sort(key=lambda x: x[1], reverse=True)
             return recent[0][0]
 
-        # Fallback: just return the most recently modified log file overall.
-        # This handles cold-start cases where the file was created much earlier
-        # but is the correct active session log.
         stat_map.sort(key=lambda x: x[1], reverse=True)
         return stat_map[0][0]
 
+    # ─────────────────────────────────────────────
+
     def _read_biome_from(self, path: Path) -> Optional[str]:
-        """
-        Read only new data appended since the last call (incremental seek).
-        Falls back to full tail read on the first call for a given path.
-        """
         try:
             size = path.stat().st_size
         except OSError:
             return None
 
-        last_pos = self._seek_pos.get(path, 0)
+        last_pos = self._seek_pos.get(path)
+
+        # first read for this log
+        if last_pos is None:
+            last_pos = 0
+            self._seek_pos[path] = 0
 
         if last_pos >= size:
-            # File hasn't grown; use accumulated buffer if any
             text = self._read_buf.get(path, "")
         else:
             try:
                 with open(path, "rb") as fh:
                     fh.seek(last_pos)
                     new_bytes = fh.read()
+
                 self._seek_pos[path] = size
+
             except (OSError, IOError):
                 return None
 
             new_text = new_bytes.decode("utf-8", errors="ignore")
-            # Keep a rolling window so patterns aren't split across reads
+
             prev_buf = self._read_buf.get(path, "")
             combined = prev_buf + new_text
-            # Cap buffer to avoid unbounded growth
-            if len(combined) > self.tail_bytes * 2:
-                combined = combined[-(self.tail_bytes * 2):]
+
+            # maintain rolling window
+            max_len = self.tail_bytes * 2
+            if len(combined) > max_len:
+                combined = combined[-max_len:]
+
             self._read_buf[path] = combined
             text = combined
 
+        # regex detection
         for pattern in PATTERNS.BIOME_PATTERNS:
             matches = pattern.findall(text)
             if matches:
@@ -751,51 +754,50 @@ class RobloxLogReader:
                 if biome and biome.lower() not in ("none", "unknown", ""):
                     return biome
 
-        tail_upper = text.upper()
+        # fallback direct detection
+        upper = text.upper()
         for biome in PATTERNS.BIOME_DIRECT:
-            if biome in tail_upper:
+            if biome in upper:
                 return biome
 
         return None
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────
 
     def get_current_biome(self) -> Optional[str]:
-    path = self._session_log or self._find_session_log()
-    if not path:
-        return None
+        path = self._session_log or self._find_session_log()
+        if not path:
+            return None
 
-    try:
-        st = path.stat()
-        idle_secs = time.time() - st.st_mtime
-        age_secs = time.time() - st.st_ctime
+        try:
+            st = path.stat()
 
-        # If the log seems stale, try finding a newer one
-        if idle_secs > 120 and age_secs > 120:
-            newer = self._find_session_log()
+            idle_secs = time.time() - st.st_mtime
+            age_secs = time.time() - st.st_ctime
 
-            if newer and newer != self._session_log:
-                old_log = self._session_log
+            # stale log detection
+            if idle_secs > 120 and age_secs > 120:
+                newer = self._find_session_log()
 
-                # Clear state from previous log
-                if old_log is not None:
-                    self._seek_pos.pop(old_log, None)
-                    self._read_buf.pop(old_log, None)
+                if newer and newer != self._session_log:
+                    old = self._session_log
 
-                # Switch to new log
-                self._session_log = newer
+                    if old:
+                        self._seek_pos.pop(old, None)
+                        self._read_buf.pop(old, None)
 
-                # Reset incremental reader state
-                self._seek_pos[newer] = 0
-                self._read_buf[newer] = ""
+                    self._session_log = newer
+                    self._seek_pos[newer] = 0
+                    self._read_buf[newer] = ""
 
-                path = newer
+                    path = newer
 
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    return self._read_biome_from(path)
-
+        self._session_log = path
+        return self._read_biome_from(path)
+  
     def wait_for_biome(self, timeout: float = 75.0) -> Optional[str]:
         """Blocking wait (run in executor). Returns biome name or None on timeout.
 
