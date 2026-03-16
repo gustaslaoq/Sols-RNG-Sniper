@@ -46,6 +46,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QPainter, QPen, QIcon, QPixmap, QCursor, QMouseEvent,
     QKeySequence, QShortcut, QPalette, QFont, QKeyEvent, QBrush, QImage,
+    QLinearGradient,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -1123,7 +1124,7 @@ QProgressBar::chunk {{
 SVG = {
     # ── Navigation / sidebar ──────────────────────────────────────────────────
     "home":          '<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
-    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>',
+    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
     "logs":          '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
     "bell":          '<path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>',
     "clock":         '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
@@ -1907,7 +1908,7 @@ class _SplashBarWidget(QWidget):
         super().__init__(parent)
         self._value = 0.0
         self._total = 1
-        self.setFixedHeight(4)
+        self.setFixedHeight(3)
         self.setStyleSheet("background: transparent;")
 
     def set_progress(self, value: float, total: int):
@@ -1921,17 +1922,26 @@ class _SplashBarWidget(QWidget):
         w = self.width()
         filled = int(w * min(self._value, self._total) / max(1, self._total))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#1c1c1c"))
-        p.drawRoundedRect(0, 0, w, 4, 2, 2)
+        p.setBrush(QColor("#1a1a1a"))
+        p.drawRoundedRect(0, 0, w, 3, 1, 1)
         if filled > 0:
-            p.setBrush(QColor("#ffffff"))
-            p.drawRoundedRect(0, 0, filled, 4, 2, 2)
+            grad = QLinearGradient(0, 0, w, 0)
+            grad.setColorAt(0.0, QColor("#ffffff"))
+            grad.setColorAt(1.0, QColor("#888888"))
+            p.setBrush(grad)
+            p.drawRoundedRect(0, 0, filled, 3, 1, 1)
         p.end()
 
 
 class SplashScreen(QWidget):
     finished       = Signal()
     _update_result = Signal(bool, str)
+
+    # ── animation phases ──────────────────────────────────────────────────────
+    # Phase 0: fade in + logo slides from centre → left while "SLAOQ" fades in
+    # Phase 1: "SOL'S RNG SNIPER" rises up from below
+    # Phase 2: progress bar + task label appear, steps advance
+    # Phase 3: fade out
 
     _TASKS = [
         "Initializing runtime environment…",
@@ -1941,134 +1951,213 @@ class SplashScreen(QWidget):
         "Ready.",
     ]
 
-    _HERO_H     = 118
-    _HERO_Y     = 68
-    _SLIDE_DIST = 28
-    _BOTTOM_Y   = 232
+    # window geometry
+    _W = 520
+    _H = 320
+
+    # logo: starts centred, slides to left column
+    _LOGO_SZ        = 96        # px, larger than before
+    _LOGO_CX_START  = 260       # centre-x when logo is centred (W/2)
+    _LOGO_CX_END    = 110       # centre-x of logo in final left position
+    _LOGO_Y         = 110       # top-y of logo (stays fixed vertically)
+
+    # "SLAOQ" label appears next to logo on the right
+    _BRAND_X        = 180       # left edge of brand text in final position
+    _BRAND_Y        = 110       # same baseline as logo top
+
+    # "SOL'S RNG SNIPER" subtitle — rises up
+    _SUB_Y_START    = 230       # initial y (below final)
+    _SUB_Y_END      = 205       # final y
+    _SUB_X          = 0         # full width, centred
+
+    # progress bar + label
+    _BAR_Y          = 268
+    _BAR_PAD        = 44
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(420, 280)
+        self.setFixedSize(self._W, self._H)
 
         screen = QApplication.primaryScreen().geometry()
-        self.move(screen.center().x() - 210, screen.center().y() - 140)
+        self.move(screen.center().x() - self._W // 2,
+                  screen.center().y() - self._H // 2)
 
-        self._opacity      = 0.0
-        self._hero_t       = 0.0
-        self._bottom_alpha = 0.0
-        self._bar_value    = 0.0
-        self._bar_target   = 0.0
-        self._task_idx     = 0
-        self._hero_done    = False
+        # animation state
+        self._opacity       = 0.0
+        self._phase         = 0        # 0=logo-slide, 1=subtitle, 2=bar, 3=fadeout
+        self._logo_t        = 0.0      # 0→1: logo slide + brand fade
+        self._sub_t         = 0.0      # 0→1: subtitle rise
+        self._bottom_alpha  = 0.0
+        self._bar_value     = 0.0
+        self._bar_target    = 0.0
+        self._task_idx      = 0
+        self._update_checked = False
 
         self._update_result.connect(self._on_check_done)
         self._build()
 
+    # ── widget construction ───────────────────────────────────────────────────
+
     def _build(self):
+        # background card
         self._root = QWidget(self)
         self._root.setObjectName("SplashRoot")
-        self._root.setGeometry(0, 0, 420, 280)
+        self._root.setGeometry(0, 0, self._W, self._H)
         self._root.setStyleSheet(
             "QWidget#SplashRoot{"
             "background-color:#000000;"
-            "border:1px solid #1c1c1c;"
-            "border-radius:16px;}")
+            "border:1px solid #1e1e1e;"
+            "border-radius:18px;}")
 
-        pad     = 40
-        inner_w = 420 - pad * 2
-
-        self._hero_w = QWidget(self._root)
-        self._hero_w.setGeometry(pad, self._HERO_Y + self._SLIDE_DIST, inner_w, self._HERO_H)
-        self._hero_w.setStyleSheet("background:transparent;")
-        hl = QVBoxLayout(self._hero_w)
-        hl.setContentsMargins(0, 0, 0, 0)
-        hl.setSpacing(10)
-        hl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-
-        self._logo_lbl = QLabel()
+        # ── logo label ────────────────────────────────────────────────────────
+        sz = self._LOGO_SZ
+        self._logo_lbl = QLabel(self._root)
+        self._logo_lbl.setFixedSize(sz, sz)
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._logo_lbl.setFixedSize(64, 64)
         self._logo_lbl.setStyleSheet("background:transparent;")
         if LOGO_PATH.exists():
             px = QPixmap(str(LOGO_PATH)).scaled(
-                64, 64,
+                sz, sz,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self._logo_lbl.setPixmap(px)
-        hl.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        # start centred
+        self._logo_lbl.move(self._LOGO_CX_START - sz // 2, self._LOGO_Y)
 
-        self._name_lbl = QLabel(APP_NAME)
-        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._name_lbl.setStyleSheet(
-            "color:#ffffff;font-size:11px;font-weight:700;"
-            "letter-spacing:3px;background:transparent;")
-        hl.addWidget(self._name_lbl)
+        # ── "SLAOQ" brand label ───────────────────────────────────────────────
+        self._brand_lbl = QLabel("SLAOQ", self._root)
+        self._brand_lbl.setStyleSheet(
+            "color:#ffffff;font-size:36px;font-weight:800;"
+            "letter-spacing:6px;background:transparent;")
+        self._brand_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._brand_lbl.adjustSize()
+        self._brand_lbl.move(self._BRAND_X, self._BRAND_Y + (sz - self._brand_lbl.height()) // 2)
+        # opacity effect for brand fade-in
+        self._brand_eff = QGraphicsOpacityEffect(self._brand_lbl)
+        self._brand_eff.setOpacity(0.0)
+        self._brand_lbl.setGraphicsEffect(self._brand_eff)
 
-        self._ver_lbl = QLabel(f"v{APP_VERSION}")
-        self._ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._ver_lbl.setStyleSheet(
-            "color:#555555;font-size:10px;letter-spacing:1px;background:transparent;")
-        hl.addWidget(self._ver_lbl)
+        # ── "SOL'S RNG SNIPER" subtitle ───────────────────────────────────────
+        self._sub_lbl = QLabel("SOL'S RNG SNIPER", self._root)
+        self._sub_lbl.setFixedWidth(self._W)
+        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sub_lbl.setStyleSheet(
+            "color:#666666;font-size:11px;font-weight:600;"
+            "letter-spacing:4px;background:transparent;")
+        self._sub_lbl.move(0, self._SUB_Y_START)
+        self._sub_eff = QGraphicsOpacityEffect(self._sub_lbl)
+        self._sub_eff.setOpacity(0.0)
+        self._sub_lbl.setGraphicsEffect(self._sub_eff)
 
-        self._bottom_w = QWidget(self._root)
-        self._bottom_w.setGeometry(pad, self._BOTTOM_Y, inner_w, 32)
-        self._bottom_w.setStyleSheet("background:transparent;")
-        bl = QVBoxLayout(self._bottom_w)
-        bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(7)
+        # ── progress bar + task label ─────────────────────────────────────────
+        pad = self._BAR_PAD
+        bar_w = self._W - pad * 2
 
-        self._bar_w = _SplashBarWidget()
-        bl.addWidget(self._bar_w)
+        self._bar_w = _SplashBarWidget(self._root)
+        self._bar_w.setGeometry(pad, self._BAR_Y, bar_w, 3)
 
-        self._task_lbl = QLabel(self._TASKS[0])
+        self._task_lbl = QLabel(self._TASKS[0], self._root)
+        self._task_lbl.setFixedWidth(bar_w)
         self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._task_lbl.setStyleSheet("color:#555555;font-size:10px;background:transparent;")
-        bl.addWidget(self._task_lbl)
+        self._task_lbl.setStyleSheet("color:#444444;font-size:10px;background:transparent;")
+        self._task_lbl.move(pad, self._BAR_Y + 10)
 
-        self._bottom_eff = QGraphicsOpacityEffect(self._bottom_w)
+        # group the bar + label behind a single opacity effect
+        self._bottom_container = QWidget(self._root)
+        self._bottom_container.setGeometry(0, self._BAR_Y - 4, self._W, 40)
+        self._bottom_container.setStyleSheet("background:transparent;")
+        self._bottom_container.lower()
+        # Re-parent bar and task into container
+        self._bar_w.setParent(self._bottom_container)
+        self._bar_w.setGeometry(pad, 4, bar_w, 3)
+        self._task_lbl.setParent(self._bottom_container)
+        self._task_lbl.setGeometry(pad, 14, bar_w, 16)
+
+        self._bottom_eff = QGraphicsOpacityEffect(self._bottom_container)
         self._bottom_eff.setOpacity(0.0)
-        self._bottom_w.setGraphicsEffect(self._bottom_eff)
+        self._bottom_container.setGraphicsEffect(self._bottom_eff)
 
+        # ── timers ────────────────────────────────────────────────────────────
         self._master_timer = QTimer(self)
         self._master_timer.setInterval(16)
         self._master_timer.timeout.connect(self._tick)
 
         self._step_timer = QTimer(self)
-        self._step_timer.setInterval(560)
+        self._step_timer.setInterval(520)
         self._step_timer.timeout.connect(self._step)
+
+    # ── public ───────────────────────────────────────────────────────────────
 
     def start(self):
         self.setWindowOpacity(0.0)
         self.show()
+        # kick off update check immediately so result is ready when animation ends
+        self._launch_update_check()
         self._master_timer.start()
 
+    # ── animation tick ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ease_out_cubic(t: float) -> float:
+        return 1.0 - (1.0 - t) ** 3
+
+    @staticmethod
+    def _ease_out_quad(t: float) -> float:
+        return 1.0 - (1.0 - t) ** 2
+
     def _tick(self):
+        # ── global fade-in ────────────────────────────────────────────────────
         if self._opacity < 1.0:
-            self._opacity = min(1.0, self._opacity + 0.065)
+            self._opacity = min(1.0, self._opacity + 0.07)
             self.setWindowOpacity(self._opacity)
 
-        if self._hero_t < 1.0:
-            self._hero_t = min(1.0, self._hero_t + 0.055)
-            ease   = 1.0 - self._hero_t
-            offset = int(self._SLIDE_DIST * (ease ** 2))
-            self._hero_w.move(40, self._HERO_Y + offset)
-            if self._hero_t >= 1.0:
-                self._hero_w.move(40, self._HERO_Y)
-                self._hero_done = True
+        # ── phase 0: logo slides left, brand fades in ────────────────────────
+        if self._phase == 0:
+            self._logo_t = min(1.0, self._logo_t + 0.028)
+            e = self._ease_out_cubic(self._logo_t)
+            sz = self._LOGO_SZ
+
+            # logo x: interpolate centre-x from start to end
+            cx = self._LOGO_CX_START + (self._LOGO_CX_END - self._LOGO_CX_START) * e
+            self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
+
+            # brand fades in during second half of logo slide
+            brand_alpha = max(0.0, (self._logo_t - 0.4) / 0.6)
+            self._brand_eff.setOpacity(min(1.0, brand_alpha))
+
+            if self._logo_t >= 1.0:
+                self._phase = 1
+
+        # ── phase 1: subtitle rises up ───────────────────────────────────────
+        elif self._phase == 1:
+            self._sub_t = min(1.0, self._sub_t + 0.035)
+            e = self._ease_out_quad(self._sub_t)
+
+            y = int(self._SUB_Y_START + (self._SUB_Y_END - self._SUB_Y_START) * e)
+            self._sub_lbl.move(0, y)
+            self._sub_eff.setOpacity(e)
+
+            if self._sub_t >= 1.0:
+                self._phase = 2
+                # start step timer — drives the progress bar
                 self._step_timer.start()
 
-        if self._hero_done and self._bottom_alpha < 1.0:
-            self._bottom_alpha = min(1.0, self._bottom_alpha + 0.055)
-            self._bottom_eff.setOpacity(self._bottom_alpha)
+        # ── phase 2: bottom bar fades in + steps advance ─────────────────────
+        elif self._phase == 2:
+            if self._bottom_alpha < 1.0:
+                self._bottom_alpha = min(1.0, self._bottom_alpha + 0.055)
+                self._bottom_eff.setOpacity(self._bottom_alpha)
 
-        if self._hero_done:
+            # smooth bar fill
             diff = self._bar_target - self._bar_value
             if abs(diff) > 0.003:
                 self._bar_value += diff * 0.10
                 self._bar_w.set_progress(self._bar_value, len(self._TASKS))
+
+    # ── step / update logic ───────────────────────────────────────────────────
 
     def _step(self):
         self._task_idx += 1
@@ -2077,14 +2166,15 @@ class SplashScreen(QWidget):
         if self._task_idx < len(self._TASKS):
             self._task_lbl.setText(self._TASKS[self._task_idx])
 
+        # step 1 = "Checking for updates" — was already launched in start()
+        # just wait for the signal; pause the step timer
         if self._task_idx == 1:
             self._step_timer.stop()
-            self._launch_update_check()
             return
 
         if self._task_idx >= len(self._TASKS):
             self._step_timer.stop()
-            QTimer.singleShot(600, self._begin_fade_out)
+            QTimer.singleShot(700, self._begin_fade_out)
 
     def _launch_update_check(self):
         sig = self._update_result
@@ -2099,8 +2189,9 @@ class SplashScreen(QWidget):
         if found:
             self._task_lbl.setText(f"Update found ({sha}) — launching build…")
             self._bar_target = float(len(self._TASKS))
-            QTimer.singleShot(1000, lambda: self._do_update(sha))
+            QTimer.singleShot(1200, lambda: self._do_update(sha))
         else:
+            # resume normal step sequence from task 1
             self._step_timer.start()
             self._step()
 
@@ -2117,8 +2208,6 @@ class SplashScreen(QWidget):
             QTimer.singleShot(600, lambda: (self._step_timer.start(), self._step()))
 
     def _quit_for_update(self):
-        """Hard-exit after launching the build script.
-        Uses os._exit() so PySide6 cannot swallow the SystemExit inside a slot."""
         self._step_timer.stop()
         self._master_timer.stop()
         self.close()
@@ -2128,15 +2217,18 @@ class SplashScreen(QWidget):
             pass
         os._exit(0)
 
+    # ── fade-out ──────────────────────────────────────────────────────────────
+
     def _begin_fade_out(self):
         self._step_timer.stop()
+        self._phase = 3
         self._fade_out_timer = QTimer(self)
         self._fade_out_timer.setInterval(16)
         self._fade_out_timer.timeout.connect(self._tick_fade_out)
         self._fade_out_timer.start()
 
     def _tick_fade_out(self):
-        self._opacity = max(0.0, self._opacity - 0.085)
+        self._opacity = max(0.0, self._opacity - 0.075)
         self.setWindowOpacity(self._opacity)
         if self._opacity <= 0.0:
             self._fade_out_timer.stop()
@@ -2145,7 +2237,7 @@ class SplashScreen(QWidget):
             self.close()
             self.finished.emit()
 
-# AUTO-UPDATER
+
 
 def _get_exe_dir() -> Path:
     if getattr(sys, "frozen", False):
