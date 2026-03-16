@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import subprocess
 import os
+import platform
 import threading
 import asyncio
 import traceback
@@ -90,7 +91,7 @@ except ImportError:
         def __init__(self):
             self.token = ""; self.monitored_channels = []
             self.profiles = [SnipeProfile("Global")]; self.auto_join_enabled = True
-            self.close_roblox_after_join = False; self.auto_join_delay_ms = 0
+            self.close_roblox_before_join = False; self.auto_join_delay_ms = 0
             self.anti_bait_enabled = True; self.dev_mode = False
             self.log_to_file = False; self.log_tail_bytes = 4096
             self.hotkey_toggle_key = ""; self.hotkey_toggle_en = False
@@ -230,7 +231,7 @@ class BlacklistEntry:
         self.username   = username
         self.reason     = reason
         self.count      = count
-        self.last_event = last_event or time.monotonic()
+        self.last_event = last_event or time.time()   # Bug 2 fix: use wall clock for persistence
         self.expires_at = expires_at
 
     def to_dict(self) -> dict:
@@ -246,7 +247,7 @@ class BlacklistEntry:
                    expires_at=d.get("expires_at", 0.0))
 
     def is_expired(self) -> bool:
-        return self.expires_at > 0.0 and time.monotonic() > self.expires_at
+        return self.expires_at > 0.0 and time.time() > self.expires_at
 
 
 class BlacklistManager:
@@ -280,12 +281,13 @@ class BlacklistManager:
     def add(self, user_id: str, username: str, reason: str = REASON_MANUAL,
             ttl_hours: float = 0.0):
         eff = (ttl_hours * 3600) if ttl_hours > 0 else self._ttl_secs
-        exp = (time.monotonic() + eff) if eff > 0 else 0.0
+        # Bug 2 fix: expires_at stored as wall-clock time.time() so it survives restarts
+        exp = (time.time() + eff) if eff > 0 else 0.0
         with self._lock:
             if user_id in self._entries:
                 e = self._entries[user_id]
                 e.count += 1; e.reason = reason
-                e.last_event = time.monotonic(); e.expires_at = exp
+                e.last_event = time.time(); e.expires_at = exp
             else:
                 self._entries[user_id] = BlacklistEntry(
                     user_id=user_id, username=username, reason=reason, expires_at=exp)
@@ -313,7 +315,7 @@ class BlacklistManager:
             return e
 
     def all_entries(self) -> list:
-        now = time.monotonic()
+        now = time.time()   # Bug 2 fix: compare against wall clock
         with self._lock:
             expired = [uid for uid, e in self._entries.items()
                        if e.expires_at > 0 and now > e.expires_at]
@@ -430,8 +432,11 @@ class SnipeHistoryManager:
         except Exception:
             pass
 
-    def record(self, snipe_data: dict):
+    def record(self, snipe_data: dict) -> str:
+        """Record a snipe and return its unique snipe_id for later biome update."""
+        snipe_id = snipe_data.get("uri", "") + "|" + snipe_data.get("timestamp_iso", "")
         entry = {
+            "snipe_id":          snipe_id,
             "timestamp":         snipe_data.get("timestamp_iso", datetime.datetime.now().isoformat()),
             "profile":           snipe_data.get("profile", "?"),
             "author":            snipe_data.get("author", "?"),
@@ -450,9 +455,23 @@ class SnipeHistoryManager:
             if len(self._entries) > self.MAX_ENTRIES:
                 self._entries = self._entries[-self.MAX_ENTRIES:]
             self._save()
+        return snipe_id
+
+    def update_biome_by_id(self, snipe_id: str, verified: bool):
+        """Bug 6 fix: target the specific snipe entry by ID, not always the last one."""
+        with self._lock:
+            for entry in reversed(self._entries):
+                if entry.get("snipe_id") == snipe_id:
+                    entry["biome_verified"] = verified
+                    self._save()
+                    return
+            # Fallback: if ID not found (old entries), update last
+            if self._entries:
+                self._entries[-1]["biome_verified"] = verified
+                self._save()
 
     def update_last_biome(self, verified: bool):
-        """Mark the last snipe entry with biome verification result."""
+        """Legacy shim — prefer update_biome_by_id when snipe_id is available."""
         with self._lock:
             if self._entries:
                 self._entries[-1]["biome_verified"] = verified
@@ -655,8 +674,7 @@ class WebhookSender:
         return event_type
 
     def _is_duplicate(self, key: str) -> bool:
-        import time as _time
-        now = _time.monotonic()
+        now = time.monotonic()
         expired = [k for k, exp in self._sent.items() if now >= exp]
         for k in expired:
             del self._sent[k]
@@ -1283,6 +1301,7 @@ class Bridge(QObject):
         self._thread: Optional[threading.Thread]          = None
         self._loop:   Optional[asyncio.AbstractEventLoop] = None
         self._webhook_session: Optional[aiohttp.ClientSession] = None
+        self._last_snipe_id: str = ""
 
         # ── Wire engine callbacks ─────────────────────────────────────────
         self.engine.on_log    = self.sig_log.emit
@@ -1291,14 +1310,21 @@ class Bridge(QObject):
         self.engine.on_ping_update = self.sig_ping.emit
 
         def _on_snipe(data: dict):
-            hist.record(data)
+            snipe_id = hist.record(data)
+            # Store latest snipe_id on the bridge so _on_biome can target it
+            self._last_snipe_id = snipe_id
             self.sig_snipe.emit(data)
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._send_snipe_webhook(data), self._loop)
 
         def _on_biome(exp: str, det: str, ok: bool):
-            hist.update_last_biome(ok)
+            # Bug 6 fix: use snipe_id to update the correct history entry
+            snipe_id = getattr(self, "_last_snipe_id", "")
+            if snipe_id:
+                hist.update_biome_by_id(snipe_id, ok)
+            else:
+                hist.update_last_biome(ok)
             self.sig_biome.emit(exp, det, ok)
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
@@ -2035,67 +2061,118 @@ def _needs_update() -> tuple:
         return False, ""
     return True, remote_sha
 
-def _ensure_bat() -> Optional[Path]:
+def _ensure_build_script() -> Optional[Path]:
+    """Return the path to the build script, downloading it if needed.
+    Uses build.bat on Windows, build.sh on macOS/Linux."""
     exe_dir = _get_exe_dir()
-    bat     = exe_dir / "build.bat"
-    if bat.exists():
-        return bat
+    _system = platform.system()
+    if _system == "Windows":
+        script = exe_dir / "build.bat"
+        remote_name = "build.bat"
+    else:
+        script = exe_dir / "build.sh"
+        remote_name = "build.sh"
+
+    if script.exists():
+        return script
     if not GITHUB_REPO:
         return None
     try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/build.bat"
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{remote_name}"
         req = urllib.request.Request(url, headers={"User-Agent": "SniperApp/Updater"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
-        text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-        bat.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
-        return bat
+        if _system == "Windows":
+            text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+            script.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        else:
+            script.write_bytes(raw)
+            # Make executable on Unix
+            script.chmod(script.stat().st_mode | 0o111)
+        return script
     except Exception as exc:
-        print(f"[Updater] Could not fetch build.bat: {exc}")
+        print(f"[Updater] Could not fetch {remote_name}: {exc}")
         return None
 
+# Keep legacy name for any internal callers
+_ensure_bat = _ensure_build_script
+
+
 def _launch_bat_update() -> bool:
+    """Launch the build/update script in a new terminal window, cross-platform."""
     global _UPDATE_TRIGGERED
     if _UPDATE_TRIGGERED:
         return False
     _UPDATE_TRIGGERED = True
 
-    bat = _ensure_bat()
-    if not bat:
-        print("[Updater] build.bat not available.")
+    script = _ensure_build_script()
+    if not script:
+        print("[Updater] Build script not available.")
         return False
+
     if getattr(sys, "frozen", False):
         target = str(sys.executable)
     else:
-        target = str(_get_exe_dir() / f"{EXE_NAME}.exe")
+        ext    = ".exe" if platform.system() == "Windows" else ""
+        target = str(_get_exe_dir() / f"{EXE_NAME}{ext}")
 
-    wrapper_content = (
-        "@echo off\r\n"
-        "title Slaoq's Sniper \u2014 Auto Update\r\n"
-        "color 0F\r\n"
-        f"call \"{bat}\" --update \"{target}\"\r\n"
-        "echo.\r\n"
-        "echo  Done. This window will stay open.\r\n"
-        "pause >nul\r\n"
-    )
+    _system = platform.system()
 
     try:
-        wrapper = _get_exe_dir() / "_update_launcher.bat"
-        wrapper.write_bytes(wrapper_content.encode("utf-8"))
-    except Exception as exc:
-        print(f"[Updater] Could not write wrapper bat: {exc}")
-        return False
+        if _system == "Windows":
+            wrapper_content = (
+                "@echo off\r\n"
+                "title Slaoq's Sniper \u2014 Auto Update\r\n"
+                "color 0F\r\n"
+                f"call \"{script}\" --update \"{target}\"\r\n"
+                "echo.\r\n"
+                "echo  Done. This window will stay open.\r\n"
+                "pause >nul\r\n"
+            )
+            wrapper = _get_exe_dir() / "_update_launcher.bat"
+            wrapper.write_bytes(wrapper_content.encode("utf-8"))
+            si = subprocess.STARTUPINFO()
+            si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 1
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(wrapper)],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                cwd=str(_get_exe_dir()),
+                startupinfo=si,
+            )
 
-    try:
-        si = subprocess.STARTUPINFO()
-        si.dwFlags     = subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 1
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(wrapper)],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-            cwd=str(_get_exe_dir()),
-            startupinfo=si,
-        )
+        elif _system == "Darwin":
+            # Open a new Terminal.app window running the build script
+            apple_script = (
+                f'tell application "Terminal" to do script '
+                f'"bash \\"{script}\\" --update \\"{target}\\""'
+            )
+            subprocess.Popen(["osascript", "-e", apple_script])
+
+        else:
+            # Linux: try common terminal emulators in priority order
+            terminals = [
+                ["x-terminal-emulator", "-e"],
+                ["gnome-terminal", "--"],
+                ["xterm", "-e"],
+                ["konsole", "-e"],
+                ["xfce4-terminal", "-e"],
+            ]
+            cmd_str = f'bash "{script}" --update "{target}"; echo "Done — press Enter"; read'
+            launched = False
+            for term_parts in terminals:
+                try:
+                    subprocess.Popen(term_parts + ["bash", "-c", cmd_str],
+                                     cwd=str(_get_exe_dir()))
+                    launched = True
+                    break
+                except FileNotFoundError:
+                    continue
+            if not launched:
+                # Headless fallback: run directly without a terminal window
+                subprocess.Popen(["bash", str(script), "--update", target],
+                                  cwd=str(_get_exe_dir()))
+
         return True
     except Exception as exc:
         print(f"[Updater] Failed to launch update: {exc}")
@@ -2818,6 +2895,42 @@ class ProfileEditor(QWidget):
         fl.addLayout(bl_hdr)
         self._bl = self._kw_widget(fl, is_blacklist=True)
 
+        # ── Per-profile custom sound ──────────────────────────────────────────
+        fl.addWidget(hdiv())
+        snd_hdr = QHBoxLayout()
+        snd_hdr.addWidget(lbl("CUSTOM SOUND FILE", "GrpLabel"))
+        snd_hdr.addWidget(HelpIcon(
+            "Play this audio file when this profile snipes.\n"
+            "Supports .wav / .mp3 / .ogg — works on Windows, macOS and Linux.\n"
+            "Leave empty to use the global beep."))
+        snd_hdr.addStretch()
+        fl.addLayout(snd_hdr)
+
+        snd_row = QHBoxLayout(); snd_row.setSpacing(6)
+        self._snd_path = QLineEdit()
+        self._snd_path.setPlaceholderText("Path to audio file (optional)…")
+        self._snd_path.setReadOnly(True)
+        self._snd_path.textChanged.connect(self._on_snd_path)
+        snd_row.addWidget(self._snd_path)
+
+        snd_browse = QPushButton("Browse…"); snd_browse.setObjectName("SmallBtn")
+        snd_browse.setFixedWidth(72)
+        snd_browse.clicked.connect(self._browse_sound)
+        snd_row.addWidget(snd_browse)
+
+        snd_clear = QPushButton("✕"); snd_clear.setObjectName("SmallDangerBtn")
+        snd_clear.setFixedWidth(28)
+        snd_clear.setToolTip("Clear custom sound")
+        snd_clear.clicked.connect(lambda: self._snd_path.setText(""))
+        snd_row.addWidget(snd_clear)
+
+        snd_test = QPushButton("▶"); snd_test.setObjectName("SmallBtn")
+        snd_test.setFixedWidth(28)
+        snd_test.setToolTip("Test this sound")
+        snd_test.clicked.connect(self._test_profile_sound)
+        snd_row.addWidget(snd_test)
+        fl.addLayout(snd_row)
+
         scroll = SmoothScrollArea(); scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2857,7 +2970,7 @@ class ProfileEditor(QWidget):
         self._profile = p
         is_global = p.locked
 
-        for w in (self._chk_enabled, self._chk_rx, self._inp_biome):
+        for w in (self._chk_enabled, self._chk_rx, self._inp_biome, self._snd_path):
             w.blockSignals(True)
 
         self._placeholder.setVisible(False); self._form.setVisible(True)
@@ -2867,8 +2980,9 @@ class ProfileEditor(QWidget):
         self._inp_biome.setText(p.verify_biome_name)
         self._chk_rx.setChecked(p.use_regex)
         self._update_biome_deps(p.verify_biome_name)
+        self._snd_path.setText(getattr(p, "sound_alert_path", ""))
 
-        for w in (self._chk_enabled, self._chk_rx, self._inp_biome):
+        for w in (self._chk_enabled, self._chk_rx, self._inp_biome, self._snd_path):
             w.blockSignals(False)
 
         for w in (self._biome_section, self._rx_section, self._trigger_group):
@@ -2885,6 +2999,30 @@ class ProfileEditor(QWidget):
         has_biome = bool(text.strip())
         self._profile.kill_on_wrong_biome = has_biome
         self._lbl_kill_auto.setVisible(has_biome and not self._profile.locked)
+
+    def _on_snd_path(self, v: str):
+        if self._profile:
+            self._profile.sound_alert_path = v.strip()
+            self.changed.emit()
+
+    def _browse_sound(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Sound File", "",
+            "Audio Files (*.wav *.mp3 *.ogg *.flac *.aiff *.aif);;All Files (*)")
+        if path:
+            self._snd_path.setText(path)
+
+    def _test_profile_sound(self):
+        from sniper_engine import play_sound
+        path = self._snd_path.text().strip()
+        if path:
+            threading.Thread(
+                target=lambda: play_sound(filepath=path),
+                daemon=True, name="ProfileSoundTest").start()
+        else:
+            threading.Thread(
+                target=lambda: play_sound(1000, 200),
+                daemon=True, name="ProfileSoundTest").start()
 
     def clear(self):
         self._profile = None
@@ -2931,6 +3069,18 @@ class SettingsPage(QWidget):
         self._save_lbl = QLabel("")
         self._save_lbl.setStyleSheet(f"color: {C['dim']}; font-size: 10px; padding-right: 4px;")
         hdr.addWidget(self._save_lbl)
+
+        # Export / Import config buttons in header
+        _exp_btn = QPushButton("⬆ Export Config"); _exp_btn.setObjectName("SmallBtn")
+        _exp_btn.setToolTip("Save a copy of your config.json to a chosen location")
+        _exp_btn.clicked.connect(self._export_config)
+        hdr.addWidget(_exp_btn)
+
+        _imp_btn = QPushButton("⬇ Import Config"); _imp_btn.setObjectName("SmallBtn")
+        _imp_btn.setToolTip("Load a config.json backup — replaces current settings")
+        _imp_btn.clicked.connect(self._import_config)
+        hdr.addWidget(_imp_btn)
+
         outer.addLayout(hdr); outer.addWidget(hdiv())
 
         scroll = SmoothScrollArea(); scroll.setWidgetResizable(True)
@@ -3111,7 +3261,7 @@ class SettingsPage(QWidget):
         self._chk_aj = QCheckBox("Auto-join on snipe")
         self._chk_aj.setChecked(self._cfg.auto_join_enabled); lay.addWidget(self._chk_aj)
         self._chk_close = QCheckBox("Close Roblox before joining")
-        self._chk_close.setChecked(self._cfg.close_roblox_after_join); lay.addWidget(self._chk_close)
+        self._chk_close.setChecked(self._cfg.close_roblox_before_join); lay.addWidget(self._chk_close)
 
         delay_row = QHBoxLayout(); delay_row.addWidget(lbl("Join delay (ms):", "FieldLbl"))
         self._spn = QSpinBox(); self._spn.setRange(0, 5000)
@@ -3215,7 +3365,7 @@ class SettingsPage(QWidget):
     def _sec_sound_alert(self) -> QFrame:
         c, lay = self._card("Sound Alert")
         lay.addWidget(lbl(
-            "Plays a beep when a snipe fires — useful when the app is in the background.",
+            "Plays a sound when a snipe fires — works on Windows, macOS and Linux.",
             "FieldHint"))
         self._chk_sound = QCheckBox("Enable sound alert on snipe")
         self._chk_sound.setChecked(getattr(self._cfg, "sound_alert_enabled", False))
@@ -3224,6 +3374,7 @@ class SettingsPage(QWidget):
 
         freq_row = QHBoxLayout()
         freq_row.addWidget(lbl("Frequency (Hz):", "FieldLbl"))
+        freq_row.addWidget(HelpIcon("Pitch of the global beep. Ignored when a profile uses a custom sound file."))
         self._spn_sound_freq = QSpinBox(); self._spn_sound_freq.setRange(200, 8000)
         self._spn_sound_freq.setValue(getattr(self._cfg, "sound_alert_freq", 1000))
         self._spn_sound_freq.valueChanged.connect(self._schedule_save)
@@ -3239,21 +3390,22 @@ class SettingsPage(QWidget):
         dur_row.addWidget(self._spn_sound_dur); dur_row.addStretch()
         lay.addLayout(dur_row)
 
+        lay.addWidget(lbl(
+            "Per-profile custom audio files can be set in the Snipe Profiles section.",
+            "FieldHint"))
+
         test_btn = QPushButton("▶ Test Sound"); test_btn.setObjectName("SmallBtn")
         test_btn.clicked.connect(self._test_sound)
         lay.addWidget(test_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         return c
 
     def _test_sound(self):
+        from sniper_engine import play_sound
         freq = self._spn_sound_freq.value()
         dur  = self._spn_sound_dur.value()
-        def _play():
-            try:
-                import winsound
-                winsound.Beep(freq, dur)
-            except Exception:
-                pass
-        threading.Thread(target=_play, daemon=True, name="SoundTest").start()
+        threading.Thread(
+            target=lambda: play_sound(freq, dur),
+            daemon=True, name="SoundTest").start()
 
     def _sec_extra_tokens(self) -> QFrame:
         c, lay = self._card("Extra Discord Tokens")
@@ -3553,7 +3705,7 @@ class SettingsPage(QWidget):
     def _save(self):
         self._cfg.token                   = self._tok.text().strip()
         self._cfg.auto_join_enabled       = self._chk_aj.isChecked()
-        self._cfg.close_roblox_after_join = self._chk_close.isChecked()
+        self._cfg.close_roblox_before_join = self._chk_close.isChecked()
         self._cfg.auto_join_delay_ms      = self._spn.value()
         self._cfg.pause_after_snipe_s     = self._spn_pause.value()
         action_names = ["none", "kill", "home"]
@@ -3577,6 +3729,78 @@ class SettingsPage(QWidget):
         self._cfg.save()
         self._set_save_status("saved")
         self.config_saved.emit(self._cfg)
+
+    def _export_config(self):
+        """Export current config.json to a user-chosen path."""
+        # Flush unsaved changes first
+        self._save()
+        src = Path(self._cfg.config_path)
+        if not src.exists():
+            QMessageBox.warning(self, "Export Failed", "Config file not found — save first.")
+            return
+        dst, _ = QFileDialog.getSaveFileName(
+            self, "Export Config", "slaoq_sniper_config.json",
+            "JSON Files (*.json);;All Files (*)")
+        if not dst:
+            return
+        try:
+            import shutil as _sh
+            _sh.copy2(str(src), dst)
+            QMessageBox.information(self, "Exported",
+                f"Config saved to:\n{dst}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _import_config(self):
+        """Import a config.json backup, replacing current settings."""
+        src, _ = QFileDialog.getOpenFileName(
+            self, "Import Config", "",
+            "JSON Files (*.json);;All Files (*)")
+        if not src:
+            return
+        # Validate JSON before applying
+        try:
+            with open(src, encoding="utf-8") as fh:
+                json.load(fh)
+        except Exception as exc:
+            QMessageBox.critical(self, "Invalid File",
+                f"Not a valid JSON file:\n{exc}")
+            return
+        reply = QMessageBox.question(
+            self, "Import Config",
+            "This will replace your current settings with the imported file.\n"
+            "A backup of the current config will be saved automatically.\n\nContinue?")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Backup current config before overwriting
+        dst = Path(self._cfg.config_path)
+        backup = dst.with_suffix(".json.bak")
+        try:
+            if dst.exists():
+                import shutil as _sh
+                _sh.copy2(str(dst), str(backup))
+        except Exception:
+            pass
+        try:
+            import shutil as _sh
+            _sh.copy2(src, str(dst))
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Error", str(exc))
+            return
+        # Reload config into memory
+        from sniper_engine import SniperConfig as _SC
+        new_cfg = _SC.load(str(dst))
+        self._cfg = new_cfg
+        # Reload the whole page UI with new config
+        # Easiest: signal the parent to rebuild — emit config_saved
+        apply_theme(new_cfg.theme)
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(make_qss())
+        self.config_saved.emit(new_cfg)
+        QMessageBox.information(self, "Imported",
+            "Config imported successfully. Backup saved as config.json.bak.\n"
+            "Some UI fields may need a restart to reflect fully.")
 
     def toggle_dev(self, v: bool):
         self._dev = v; self._dev_sec.setVisible(v)
@@ -4507,9 +4731,10 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon)
 
         try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                f"slaoq.sniper.{APP_VERSION}")
+            if platform.system() == "Windows":
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    f"slaoq.sniper.{APP_VERSION}")
         except Exception:
             pass
 
