@@ -1,15 +1,3 @@
-"""
-sniper_engine.py — Slaoq's Sniper | Core Engine  v4.1
-------------------------------------------------------
-Model layer: Discord gateway, link resolver, log reader, process manager.
-
-Changes from v4.0:
-  - Removed dependency on core/ and services/ packages
-  - BlacklistManager, CooldownManager and PluginLoader are injected
-    from outside (passed via constructor) — no circular imports
-  - Project is now two-file: main.py + sniper_engine.py
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -644,7 +632,7 @@ class ProcessManager:
 
 class RobloxLogReader:
     """
-    Session-aware Roblox log reader — v4.2 fix.
+    Session-aware Roblox log reader — v4.3 fix.
 
     Parsing strategy (matches the real log format seen in production):
 
@@ -659,21 +647,29 @@ class RobloxLogReader:
     `check_for_hover_text`.  As a fallback we also accept a bare
     `"hoverText":"<BIOME>"` fragment for older Roblox versions.
 
-    Key fixes vs. original implementation
+    Key fixes vs. v4.1/v4.2
     ──────────────────────────────────────
-    1. _last_known_biome cache  — get_current_biome() always returns the last
-       seen biome even when the log has not grown (player on menu / idle).
-    2. Incremental read + tail seed — on the very first access of a log file we
-       seed the buffer with the last tail_bytes so a biome that was written
-       before mark_launch() is still detected immediately.
-    3. _scan_buffer separated  — shared parsing logic for both the first-read
-       path and the incremental path.
-    4. Word-boundary fallback   — BIOME_DIRECT matches are guarded with \\b so
-       "normal" inside "abnormal" doesn't produce a false positive.
-    5. wait_for_biome pre-scan  — scans immediately before the poll loop so a
-       biome already present in the file is returned on the first call.
-    6. Poll interval 1 s        — Roblox writes in bursts; 50 ms polling was
-       wasting CPU with zero practical benefit.
+    1. _find_session_log now prioritises logs whose ctime >= launch_time - 5s
+       (files created by the new Roblox session), falling back to mtime >=
+       launch_time, and only then to the global most-recent-file fallback.
+       This prevents picking the OLD log file that was last modified 25 seconds
+       before launch and satisfying the old `mtime >= launch_time - 30` check.
+
+    2. _ingest_new_bytes uses sentinel -1 (not 0) to distinguish "first access
+       in this session" from "seek_pos is legitimately at byte 0".  On first
+       access it checks whether the file's mtime is before launch_time: if so,
+       the file has not been touched since launch and we wait for new writes
+       (returns False), avoiding reading pre-launch biome lines as current.
+
+    3. wait_for_biome no longer calls _ingest_new_bytes directly — it goes
+       through get_current_biome() so the mtime guard is always applied and
+       stale pre-launch content is never returned on the immediate pre-poll scan.
+
+    4. get_current_biome uses -1 (not 0) when resetting the seek position for
+       a newly discovered log file, so the mtime guard fires correctly.
+
+    5. Studio log files (name contains "studio") are excluded from discovery
+       to avoid mis-identifying a Roblox Studio session as a player session.
     """
 
     # Biome names guarded with word boundaries for the plain-text fallback.
@@ -696,7 +692,14 @@ class RobloxLogReader:
     # ─────────────────────────────────────────────
 
     def mark_launch(self):
-        """Call immediately before opening a Roblox URI."""
+        """Call immediately before opening a Roblox URI.
+
+        Resets all session state so the reader will only consider log content
+        written after this point.  The sentinel value -1 in _seek_pos signals
+        _ingest_new_bytes that this is the first access for the new session,
+        allowing it to decide whether to seed from tail or wait for new bytes
+        based on the file's mtime vs. _launch_time.
+        """
         self._launch_time = time.time()
         self._session_log = None
         self._seek_pos.clear()
@@ -715,7 +718,8 @@ class RobloxLogReader:
     def _find_session_log(self) -> Optional[Path]:
         if not ROBLOX_LOG_PATH.exists():
             return None
-        logs = list(ROBLOX_LOG_PATH.glob("*.log"))
+        logs = [p for p in ROBLOX_LOG_PATH.glob("*.log")
+                if "studio" not in p.name.lower()]
         if not logs:
             return None
         stat_map = []
@@ -727,11 +731,33 @@ class RobloxLogReader:
                 continue
         if not stat_map:
             return None
-        window = self._launch_time - 30
-        recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
-        if recent:
-            recent.sort(key=lambda x: x[1], reverse=True)
-            return recent[0][0]
+
+        # Priority 1: logs whose ctime (creation time) is after launch_time.
+        # ctime on Windows is true creation time; on macOS/Linux it's last
+        # metadata-change time, which is close enough for a freshly created file.
+        # A 5-second grace window absorbs clock skew and Roblox startup lag.
+        if self._launch_time > 0:
+            created_after = [
+                (p, mt) for p, mt, ct in stat_map
+                if ct >= self._launch_time - 5
+            ]
+            if created_after:
+                created_after.sort(key=lambda x: x[1], reverse=True)
+                return created_after[0][0]
+
+            # Priority 2: logs modified after launch_time (ctime may lag on
+            # some filesystems — mtime is updated more reliably on every write).
+            modified_after = [
+                (p, mt) for p, mt, ct in stat_map
+                if mt >= self._launch_time
+            ]
+            if modified_after:
+                modified_after.sort(key=lambda x: x[1], reverse=True)
+                return modified_after[0][0]
+
+        # Fallback: most recently modified log regardless of session window.
+        # This fires when launch_time == 0 (mark_launch not yet called) or
+        # when Roblox hasn't written to any log yet.
         stat_map.sort(key=lambda x: x[1], reverse=True)
         return stat_map[0][0]
 
@@ -816,19 +842,45 @@ class RobloxLogReader:
         Read any bytes appended to *path* since the last call and append them
         to the rolling buffer.  Returns True when new bytes were actually read.
 
-        On the very first access (seek_pos == 0), we seed the buffer with the
-        last tail_bytes so a biome already in the file is visible immediately —
-        this handles the "player was already in the menu" scenario.
+        First-access strategy
+        ─────────────────────
+        On the very first access of a log file we need to seed the buffer so
+        that a biome already written before we started polling is detected
+        immediately.  HOWEVER, we must not read content from before the
+        current session (mark_launch).
+
+        If _launch_time is set we compute a conservative byte offset by
+        estimating how many bytes correspond to the pre-launch portion of the
+        file based on file age vs launch delta.  In practice we just seek to
+        the position the file was at when mark_launch() was called — we
+        approximate this as (current_size - bytes_written_since_launch).
+
+        Since we cannot know the exact byte offset without a live file handle
+        open across the launch, we use a safe heuristic:
+          • If the file was last modified BEFORE mark_launch: the entire file
+            is old — seek to end (nothing to read yet) so we don't emit stale
+            biomes, and return False so the caller waits for new writes.
+          • If the file was modified AFTER mark_launch: seed from the tail
+            (tail_bytes) as before — the new session content is at the end.
         """
         try:
-            size = path.stat().st_size
+            st = path.stat()
+            size = st.st_size
+            mtime = st.st_mtime
         except OSError:
             return False
 
-        last_pos = self._seek_pos.get(path, 0)
+        last_pos = self._seek_pos.get(path, -1)
 
-        if last_pos == 0 and size > 0:
-            # First access: seed from the tail of the existing file.
+        if last_pos == -1:
+            # First access of this path in the current session.
+            if self._launch_time > 0 and mtime < self._launch_time:
+                # File not yet touched since launch — set seek to end so we
+                # pick up only future writes, and return False.
+                self._seek_pos[path] = size
+                self._read_buf[path] = ""
+                return False
+            # File was modified at or after launch: seed from tail.
             start = max(0, size - self.tail_bytes)
         else:
             start = last_pos
@@ -895,7 +947,9 @@ class RobloxLogReader:
                         self._read_buf.pop(old, None)
                     # Keep _last_known_biome until the new log overwrites it.
                     self._session_log = newer
-                    self._seek_pos[newer] = 0
+                    # Use -1 sentinel so _ingest_new_bytes applies the
+                    # mtime-vs-launch_time guard on first access of this file.
+                    self._seek_pos[newer] = -1
                     self._read_buf[newer] = ""
                     path = newer
         except Exception:
@@ -913,17 +967,15 @@ class RobloxLogReader:
         Does an immediate full scan before entering the poll loop so a biome
         already present in the log (player already loaded) is returned instantly.
         Poll interval is 1 s — Roblox writes in bursts so 50 ms was pure waste.
+
+        The immediate scan goes through get_current_biome() — which in turn
+        calls _ingest_new_bytes() with the mtime guard — so we never return a
+        biome from a pre-launch log file.
         """
-        # Immediate scan — catches biomes already in the file.
-        path = self._session_log or self._find_session_log()
-        if path:
-            self._session_log = path
-            self._ingest_new_bytes(path)
-            buf   = self._read_buf.get(path, "")
-            found = self._scan_buffer(buf)
-            if found:
-                self._last_known_biome = found
-                return found
+        # Immediate scan — catches biomes already in the file for this session.
+        biome = self.get_current_biome()
+        if biome:
+            return biome
 
         end = time.time() + timeout
         while time.time() < end:
