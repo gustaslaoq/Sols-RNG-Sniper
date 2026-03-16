@@ -1,3 +1,15 @@
+"""
+sniper_engine.py — Slaoq's Sniper | Core Engine  v4.1
+------------------------------------------------------
+Model layer: Discord gateway, link resolver, log reader, process manager.
+
+Changes from v4.0:
+  - Removed dependency on core/ and services/ packages
+  - BlacklistManager, CooldownManager and PluginLoader are injected
+    from outside (passed via constructor) — no circular imports
+  - Project is now two-file: main.py + sniper_engine.py
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -90,6 +102,23 @@ class _Patterns:
         r"https?://(?:rb\.gy|bit\.ly|tinyurl\.com|t\.co|discord\.gg|discord\.com/invite|isgd\.it|cutt\.ly)/[\w/-]+",
         re.IGNORECASE)
 
+    # ── All known Sol's RNG biome names (largeImage hoverText values).
+    # These drive both the fallback word-boundary regex (BIOME_PATTERNS[-1])
+    # and the _BIOME_WORD_RE dict inside RobloxLogReader.
+    # Extend this tuple when the game adds new biomes.
+    _ALL_BIOME_NAMES = (
+        # Common
+        "NORMAL", "RAINY", "SNOWY", "WINDY", "SANDSTORM", "FOGGY",
+        # Rare / event
+        "GLITCHED", "DREAMSPACE", "CYBERSPACE", "HELL",
+        "NULL", "STARLIGHT", "HEAVEN", "CORRUPTED", "ABYSSAL",
+        "AURORA", "THUNDERSTORM", "OVERCAST", "BLOOD MOON",
+        # Additional confirmed / community-reported
+        "SOLAR ECLIPSE", "PUMPKIN MOON", "BLIZZARD", "ACID RAIN",
+        "HURRICANE", "TSUNAMI", "VOLCANIC", "METEOR SHOWER",
+        "RAINBOW", "HEATWAVE", "DUST STORM",
+    )
+
     # Compiled once — ordered from most specific to fallback
     BIOME_PATTERNS = [
         re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
@@ -102,14 +131,12 @@ class _Patterns:
         re.compile(r'hoverText:\s*([^\s,}\]]+)', re.IGNORECASE),
         re.compile(r'hoverText["\']?\s*[:=]\s*["\']([^"\']+)["\']', re.IGNORECASE),
         re.compile(
-            r'\b(NORMAL|GLITCHED|DREAMSPACE|CYBERSPACE|NULL|STARLIGHT|HEAVEN|CORRUPTED|ABYSSAL)\b',
-            re.IGNORECASE),
+            r"\b(" + "|".join(re.escape(b) for b in _ALL_BIOME_NAMES) + r")\b",
+            re.IGNORECASE,
+        ),
     ]
 
-    BIOME_DIRECT = frozenset([
-        "NORMAL", "GLITCHED", "DREAMSPACE", "CYBERSPACE",
-        "NULL", "STARLIGHT", "HEAVEN", "CORRUPTED", "ABYSSAL",
-    ])
+    BIOME_DIRECT = frozenset(_ALL_BIOME_NAMES)
 
 
 PATTERNS = _Patterns()
@@ -672,12 +699,6 @@ class RobloxLogReader:
        to avoid mis-identifying a Roblox Studio session as a player session.
     """
 
-    # Biome names guarded with word boundaries for the plain-text fallback.
-    _BIOME_WORD_RE: dict = {
-        b: re.compile(rf"\b{b}\b", re.IGNORECASE)
-        for b in PATTERNS.BIOME_DIRECT
-    }
-
     # Ignore these hoverText values — they are UI labels, not biome names.
     _HOVER_IGNORE = frozenset(["SOL'S RNG", "ROBLOX", ""])
 
@@ -777,21 +798,20 @@ class RobloxLogReader:
 
         Priority:
           1. BloxstrapRPC full JSON parse → data.largeImage.hoverText only.
-          2. Bare regex on "largeImage"…"hoverText" fragment (truncated lines).
-          3. Word-boundary biome name fallback.
+          2. Brace-depth parser on the largeImage object (handles truncated
+             lines and nested objects that break simple [^}]* regex).
+
+        Any hoverText value that is not in _HOVER_IGNORE is returned as-is —
+        there is no biome whitelist.  Filtering of false detections (None,
+        "UNKNOWN", UI labels) happens at the _verify_biome call site.
         """
         # ── 1. BloxstrapRPC full JSON parse ──────────────────────────────────
         # Prefix may be "[BloxstrapRPC]" or "-- [BloxstrapRPC]"
         if "BloxstrapRPC" in line and "SetRichPresence" in line:
             try:
-                # Find the JSON object on this line
                 json_start = line.find("{")
                 if json_start != -1:
-                    raw = line[json_start:]
-                    # Roblox sometimes escapes inner quotes as \" — fix that
-                    # by replacing \" that appear INSIDE already-parsed strings
-                    # Actually just try to parse as-is first; json.loads handles \".
-                    blob = json.loads(raw)
+                    blob  = json.loads(line[json_start:])
                     large = blob.get("data", {}).get("largeImage", {})
                     hover = large.get("hoverText", "")
                     if hover:
@@ -799,28 +819,51 @@ class RobloxLogReader:
                         if candidate not in self._HOVER_IGNORE:
                             return candidate
             except (json.JSONDecodeError, ValueError, AttributeError, KeyError):
-                # JSON is truncated on this line — fall through to regex
+                # JSON is truncated on this line — fall through to method 2
                 pass
 
-        # ── 2. Targeted regex: largeImage section only ────────────────────────
-        # Matches: "largeImage":{"hoverText":"BIOME",...}
-        # This handles lines where the JSON was cut off before closing braces.
+        # ── 2. Brace-depth largeImage parser ─────────────────────────────────
+        # Handles truncated lines (no closing braces) and nested objects inside
+        # largeImage.  Strategy:
+        #   a) Find "largeImage":{ in the line.
+        #   b) Walk forward tracking brace depth to isolate the largeImage object
+        #      (or take everything to end-of-line if the line is truncated).
+        #   c) Search for "hoverText":"..." inside that substring only, so
+        #      smallImage.hoverText is never mistakenly returned.
         if "largeImage" in line and "hoverText" in line:
-            m = re.search(
-                r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"',
-                line, re.IGNORECASE)
-            if m:
-                candidate = m.group(1).strip().upper()
-                if candidate not in self._HOVER_IGNORE:
-                    return candidate
-
-        # ── 3. Plain-text word-boundary fallback ─────────────────────────────
-        # Only used when there is no BloxstrapRPC/hoverText context on this line
-        # to avoid false positives from unrelated log lines.
-        if "BloxstrapRPC" not in line and "hoverText" not in line:
-            for biome, pat in self._BIOME_WORD_RE.items():
-                if pat.search(line):
-                    return biome
+            idx = line.find('"largeImage"')
+            if idx != -1:
+                brace_start = line.find('{', idx)
+                if brace_start != -1:
+                    # Walk to find closing brace (may not exist if truncated)
+                    depth = 0
+                    end   = len(line)
+                    for i in range(brace_start, len(line)):
+                        ch = line[i]
+                        if ch == '{':
+                            depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0:
+                                end = i + 1
+                                break
+                    large_substr = line[brace_start:end]
+                    # Try json.loads on the isolated object first
+                    try:
+                        obj   = json.loads(large_substr)
+                        hover = obj.get("hoverText", "").strip().upper()
+                        if hover and hover not in self._HOVER_IGNORE:
+                            return hover
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    # Fallback: simple regex inside the extracted substring
+                    m = re.search(
+                        r'"hoverText"\s*:\s*"([^"]+)"',
+                        large_substr, re.IGNORECASE)
+                    if m:
+                        candidate = m.group(1).strip().upper()
+                        if candidate not in self._HOVER_IGNORE:
+                            return candidate
 
         return None
 
@@ -1963,20 +2006,36 @@ class SniperEngine:
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         if not profile.verify_biome_name:
             return
-        loop  = asyncio.get_running_loop()
+        loop     = asyncio.get_running_loop()
         expected = profile.verify_biome_name.upper()
         self._log(LogLevel.INFO,
             f"[ANTI-BAIT] Waiting for biome in log… (expected: {expected}, timeout: 75s)")
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(75.0))
 
+        # ── None → detection failure, never punish ───────────────────────────
+        # The game always has a biome, so None means the log reader found
+        # nothing — Roblox not yet loaded, BloxstrapRPC off, log unreadable, etc.
         if biome is None:
             self._log(LogLevel.WARN,
-                "[ANTI-BAIT] Biome verification timed out — no biome detected in log within 75s")
+                "[ANTI-BAIT] No biome detected in log within 75s — skipping verification "
+                "(detection failure, not treating as bait)")
             return
 
-        detected = biome.upper()
-        matched  = (detected == expected)
+        detected = biome.strip().upper()
+
+        # ── Known false-detection sentinel strings → ignore ───────────────────
+        # These are values that have historically slipped through the parser
+        # when no real biome was present: UI labels, empty strings, etc.
+        _IGNORE = frozenset(["", "UNKNOWN", "NONE", "SOL'S RNG", "ROBLOX", "IN MAIN MENU",
+                              "IN GAME", "PLAYING", "MENU", "N/A", "NULL"])
+        if detected in _IGNORE:
+            self._log(LogLevel.WARN,
+                f"[ANTI-BAIT] Detected value '{detected}' is a known false-detection — "
+                f"skipping verification")
+            return
+
+        matched = (detected == expected)
 
         self._log(LogLevel.INFO,
             f"[ANTI-BAIT] Log biome detected: '{detected}' (expected: '{expected}')")
