@@ -644,42 +644,59 @@ class ProcessManager:
 
 class RobloxLogReader:
     """
-    Session-aware Roblox log reader with incremental parsing.
+    Session-aware Roblox log reader — v4.2 fix.
 
-    Key design decisions (v4.2 fix):
-    - _seek_pos / _read_buf track only incremental I/O so we never re-read disk.
-    - _last_known_biome caches the most recent biome found across any poll cycle.
-      This means get_current_biome() ALWAYS returns the last seen biome even when
-      no new bytes have been written to the log (e.g. player is in the menu or the
-      game session is idle).
-    - _scan_buffer() is split out so both the incremental path and the full-file
-      first-read path share the same parsing logic.
-    - Fallback BIOME_DIRECT scan is now word-boundary guarded to avoid false
-      positives (e.g. a log line mentioning "abnormal" matching "NORMAL").
+    Parsing strategy (matches the real log format seen in production):
+
+    The Roblox client writes Rich-Presence updates via BloxstrapRPC in one of
+    two formats per line:
+
+      [BloxstrapRPC] {"command":"SetRichPresence","data":{...,"largeImage":{"hoverText":"RAINY",...}}}
+      -- [BloxstrapRPC] {"command":"SetRichPresence","data":{...}}
+
+    We parse the JSON blob embedded in those lines to extract
+    data.largeImage.hoverText — exactly like the reference macro does with
+    `check_for_hover_text`.  As a fallback we also accept a bare
+    `"hoverText":"<BIOME>"` fragment for older Roblox versions.
+
+    Key fixes vs. original implementation
+    ──────────────────────────────────────
+    1. _last_known_biome cache  — get_current_biome() always returns the last
+       seen biome even when the log has not grown (player on menu / idle).
+    2. Incremental read + tail seed — on the very first access of a log file we
+       seed the buffer with the last tail_bytes so a biome that was written
+       before mark_launch() is still detected immediately.
+    3. _scan_buffer separated  — shared parsing logic for both the first-read
+       path and the incremental path.
+    4. Word-boundary fallback   — BIOME_DIRECT matches are guarded with \\b so
+       "normal" inside "abnormal" doesn't produce a false positive.
+    5. wait_for_biome pre-scan  — scans immediately before the poll loop so a
+       biome already present in the file is returned on the first call.
+    6. Poll interval 1 s        — Roblox writes in bursts; 50 ms polling was
+       wasting CPU with zero practical benefit.
     """
 
-    # Biomes that must appear as whole words in a plain-text fallback scan.
-    _BIOME_WORD_RE: dict[str, re.Pattern] = {
+    # Biome names guarded with word boundaries for the plain-text fallback.
+    _BIOME_WORD_RE: dict = {
         b: re.compile(rf"\b{b}\b", re.IGNORECASE)
         for b in PATTERNS.BIOME_DIRECT
     }
 
+    # Ignore these hoverText values — they are UI labels, not biome names.
+    _HOVER_IGNORE = frozenset(["SOL'S RNG", "ROBLOX", ""])
+
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
-        self.tail_bytes        = tail_bytes
-        self._launch_time: float          = 0.0
+        self.tail_bytes           = tail_bytes
+        self._launch_time: float  = 0.0
         self._session_log: Optional[Path] = None
-
-        self._seek_pos: dict[Path, int] = {}
-        self._read_buf: dict[Path, str] = {}
-
-        # Persists the last biome we successfully parsed — returned even when
-        # the log has not grown since the previous poll.
+        self._seek_pos: dict      = {}   # Path → int (last read position)
+        self._read_buf: dict      = {}   # Path → str (rolling text buffer)
         self._last_known_biome: Optional[str] = None
 
     # ─────────────────────────────────────────────
 
     def mark_launch(self):
-        """Call right before opening a Roblox URI so the reader tracks the new session."""
+        """Call immediately before opening a Roblox URI."""
         self._launch_time = time.time()
         self._session_log = None
         self._seek_pos.clear()
@@ -698,11 +715,9 @@ class RobloxLogReader:
     def _find_session_log(self) -> Optional[Path]:
         if not ROBLOX_LOG_PATH.exists():
             return None
-
         logs = list(ROBLOX_LOG_PATH.glob("*.log"))
         if not logs:
             return None
-
         stat_map = []
         for p in logs:
             try:
@@ -710,57 +725,89 @@ class RobloxLogReader:
                 stat_map.append((p, s.st_mtime, s.st_ctime))
             except OSError:
                 continue
-
         if not stat_map:
             return None
-
         window = self._launch_time - 30
         recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
-
         if recent:
             recent.sort(key=lambda x: x[1], reverse=True)
             return recent[0][0]
-
         stat_map.sort(key=lambda x: x[1], reverse=True)
         return stat_map[0][0]
 
     # ─────────────────────────────────────────────
 
-    def _scan_buffer(self, text: str) -> Optional[str]:
+    def _parse_biome_from_line(self, line: str) -> Optional[str]:
         """
-        Parse *text* for the last biome mention and return it, or None.
+        Extract the biome name from a single log line.
+
         Priority:
-          1. Structured  "hoverText": "<biome>"  JSON fragment (most reliable).
-          2. Word-boundary match of a known biome name anywhere in the line
-             (fallback for older log formats or menu screens).
+          1. BloxstrapRPC JSON  — parse the embedded JSON and read
+             data.largeImage.hoverText  (most reliable, matches the real format).
+          2. Bare hoverText fragment  — regex fallback for simpler log formats.
+          3. Word-boundary biome name — last-resort plain-text scan.
         """
+        # ── 1. BloxstrapRPC full JSON parse ──────────────────────────────────
+        if "BloxstrapRPC" in line and "SetRichPresence" in line:
+            try:
+                # The JSON blob starts at the first '{' after the prefix.
+                json_start = line.find('{"command":"SetRichPresence"')
+                if json_start == -1:
+                    # Some versions omit the whitespace differently
+                    json_start = line.find('{"command": "SetRichPresence"')
+                if json_start == -1:
+                    # Try finding any JSON object on the line
+                    json_start = line.find("{")
+                if json_start != -1:
+                    blob = json.loads(line[json_start:])
+                    hover = (
+                        blob.get("data", {})
+                            .get("largeImage", {})
+                            .get("hoverText", "")
+                    )
+                    if hover:
+                        candidate = hover.strip().upper()
+                        if candidate not in self._HOVER_IGNORE:
+                            return candidate
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                pass
+
+        # ── 2. Bare "hoverText": "..." regex (older format / non-RPC lines) ──
+        if "hovertext" in line.lower():
+            m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip().upper()
+                if candidate not in self._HOVER_IGNORE:
+                    return candidate
+
+        # ── 3. Plain-text word-boundary fallback ─────────────────────────────
+        for biome, pat in self._BIOME_WORD_RE.items():
+            if pat.search(line):
+                return biome
+
+        return None
+
+    # ─────────────────────────────────────────────
+
+    def _scan_buffer(self, text: str) -> Optional[str]:
+        """Scan a text buffer line-by-line and return the *last* biome found."""
         last_biome: Optional[str] = None
-
         for line in text.splitlines():
-            # ── structured hoverText ──────────────────────────────────────
-            if "hovertext" in line.lower():
-                m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
-                if m:
-                    candidate = m.group(1).strip().upper()
-                    if candidate and candidate not in ("SOL'S RNG", "ROBLOX"):
-                        last_biome = candidate
-                        continue  # prefer structured match; skip fallback for this line
-
-            # ── plain-text word-boundary fallback ────────────────────────
-            # Only runs when no hoverText was found on this line.
-            for biome, pat in self._BIOME_WORD_RE.items():
-                if pat.search(line):
-                    last_biome = biome
-                    break  # first match per line is enough
-
+            found = self._parse_biome_from_line(line)
+            if found:
+                last_biome = found
         return last_biome
 
     # ─────────────────────────────────────────────
 
     def _ingest_new_bytes(self, path: Path) -> bool:
         """
-        Read any bytes written to *path* since the last call and append them to
-        the rolling buffer.  Returns True if new bytes were actually read.
+        Read any bytes appended to *path* since the last call and append them
+        to the rolling buffer.  Returns True when new bytes were actually read.
+
+        On the very first access (seek_pos == 0), we seed the buffer with the
+        last tail_bytes so a biome already in the file is visible immediately —
+        this handles the "player was already in the menu" scenario.
         """
         try:
             size = path.stat().st_size
@@ -769,16 +816,14 @@ class RobloxLogReader:
 
         last_pos = self._seek_pos.get(path, 0)
 
-        # --- FIX: on the very first access, read the tail so we can detect a
-        #     biome that was already logged before mark_launch() was called
-        #     (handles "player was already in the menu" scenario).
         if last_pos == 0 and size > 0:
+            # First access: seed from the tail of the existing file.
             start = max(0, size - self.tail_bytes)
         else:
             start = last_pos
 
         if start >= size:
-            return False  # no new bytes
+            return False
 
         try:
             with open(path, "rb") as fh:
@@ -791,11 +836,10 @@ class RobloxLogReader:
             return False
 
         self._seek_pos[path] = size
-
-        new_text  = new_bytes.decode("utf-8", errors="ignore")
-        prev_buf  = self._read_buf.get(path, "")
-        combined  = prev_buf + new_text
-        max_len   = self.tail_bytes * 2
+        new_text = new_bytes.decode("utf-8", errors="ignore")
+        prev_buf = self._read_buf.get(path, "")
+        combined = prev_buf + new_text
+        max_len  = self.tail_bytes * 2
         if len(combined) > max_len:
             combined = combined[-max_len:]
         self._read_buf[path] = combined
@@ -805,39 +849,32 @@ class RobloxLogReader:
 
     def _read_biome_from(self, path: Path) -> Optional[str]:
         """
-        Ingest any new bytes from *path*, scan the accumulated buffer, update
-        _last_known_biome if something is found, and return it.
+        Ingest new bytes, scan the buffer, update _last_known_biome if
+        something new is found, and return the cached value.
 
-        IMPORTANT: if no new bytes arrived but we already have a known biome,
-        we return that cached value.  This is the fix for the "menu / idle"
-        detection failure — the log stops growing once the game is loaded but
-        the biome is still valid.
+        Returning _last_known_biome even when no new bytes have arrived is the
+        core fix: the log stops growing once the game loads but the biome read
+        earlier is still valid.
         """
         had_new = self._ingest_new_bytes(path)
-
         if had_new:
-            buf    = self._read_buf.get(path, "")
-            found  = self._scan_buffer(buf)
+            buf   = self._read_buf.get(path, "")
+            found = self._scan_buffer(buf)
             if found:
                 self._last_known_biome = found
-
-        # Always return the last known biome, even if this poll had no new data.
         return self._last_known_biome
 
     # ─────────────────────────────────────────────
 
     def get_current_biome(self) -> Optional[str]:
         path = self._session_log or self._find_session_log()
-
         if not path:
-            return self._last_known_biome  # return cached even without a log
+            return self._last_known_biome
 
         try:
-            st = path.stat()
+            st        = path.stat()
             idle_secs = time.time() - st.st_mtime
             age_secs  = time.time() - st.st_ctime
-
-            # If the log has been idle AND is old, look for a newer session log.
             if idle_secs > 120 and age_secs > 120:
                 newer = self._find_session_log()
                 if newer and newer != self._session_log:
@@ -845,7 +882,7 @@ class RobloxLogReader:
                     if old:
                         self._seek_pos.pop(old, None)
                         self._read_buf.pop(old, None)
-                    # Don't reset _last_known_biome — keep it until we find a new one.
+                    # Keep _last_known_biome until the new log overwrites it.
                     self._session_log = newer
                     self._seek_pos[newer] = 0
                     self._read_buf[newer] = ""
@@ -862,13 +899,11 @@ class RobloxLogReader:
         """
         Poll until a biome is detected or *timeout* seconds elapse.
 
-        poll interval raised from 0.05 s → 1.0 s: the Roblox log is written in
-        bursts (not continuously), so hammering at 20 Hz wastes CPU with no benefit.
+        Does an immediate full scan before entering the poll loop so a biome
+        already present in the log (player already loaded) is returned instantly.
+        Poll interval is 1 s — Roblox writes in bursts so 50 ms was pure waste.
         """
-        # --- FIX: seed the reader immediately so any biome already present in
-        #     the log (player was in-game before the snipe fired, or is on the
-        #     menu) is returned on the first iteration rather than after a full
-        #     file-not-grown timeout cycle.
+        # Immediate scan — catches biomes already in the file.
         path = self._session_log or self._find_session_log()
         if path:
             self._session_log = path
@@ -885,7 +920,6 @@ class RobloxLogReader:
             biome = self.get_current_biome()
             if biome:
                 return biome
-
         return None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1768,6 +1802,7 @@ class SniperEngine:
             "uri":               uri,
             "roblox_web_url":    roblox_web_url,
             "profile":           profile.name,
+            "verify_biome_name": profile.verify_biome_name if profile else "",
             "author":            author,
             "author_id":         author_id,
             "author_display":    author_display or author,
