@@ -741,49 +741,60 @@ class RobloxLogReader:
         """
         Extract the biome name from a single log line.
 
+        Real log format (confirmed from production):
+          23:32:52 -- [BloxstrapRPC] {"command":"SetRichPresence","data":{"state":"...",
+            "smallImage":{"hoverText":"Sol's RNG","assetId":...},
+            "largeImage":{"hoverText":"RAINY","assetId":...}}}
+
+        IMPORTANT: only largeImage.hoverText carries the biome name.
+        smallImage.hoverText is always "Sol's RNG" and must not be returned.
+
         Priority:
-          1. BloxstrapRPC JSON  — parse the embedded JSON and read
-             data.largeImage.hoverText  (most reliable, matches the real format).
-          2. Bare hoverText fragment  — regex fallback for simpler log formats.
-          3. Word-boundary biome name — last-resort plain-text scan.
+          1. BloxstrapRPC full JSON parse → data.largeImage.hoverText only.
+          2. Bare regex on "largeImage"…"hoverText" fragment (truncated lines).
+          3. Word-boundary biome name fallback.
         """
         # ── 1. BloxstrapRPC full JSON parse ──────────────────────────────────
+        # Prefix may be "[BloxstrapRPC]" or "-- [BloxstrapRPC]"
         if "BloxstrapRPC" in line and "SetRichPresence" in line:
             try:
-                # The JSON blob starts at the first '{' after the prefix.
-                json_start = line.find('{"command":"SetRichPresence"')
-                if json_start == -1:
-                    # Some versions omit the whitespace differently
-                    json_start = line.find('{"command": "SetRichPresence"')
-                if json_start == -1:
-                    # Try finding any JSON object on the line
-                    json_start = line.find("{")
+                # Find the JSON object on this line
+                json_start = line.find("{")
                 if json_start != -1:
-                    blob = json.loads(line[json_start:])
-                    hover = (
-                        blob.get("data", {})
-                            .get("largeImage", {})
-                            .get("hoverText", "")
-                    )
+                    raw = line[json_start:]
+                    # Roblox sometimes escapes inner quotes as \" — fix that
+                    # by replacing \" that appear INSIDE already-parsed strings
+                    # Actually just try to parse as-is first; json.loads handles \".
+                    blob = json.loads(raw)
+                    large = blob.get("data", {}).get("largeImage", {})
+                    hover = large.get("hoverText", "")
                     if hover:
                         candidate = hover.strip().upper()
                         if candidate not in self._HOVER_IGNORE:
                             return candidate
-            except (json.JSONDecodeError, ValueError, AttributeError):
+            except (json.JSONDecodeError, ValueError, AttributeError, KeyError):
+                # JSON is truncated on this line — fall through to regex
                 pass
 
-        # ── 2. Bare "hoverText": "..." regex (older format / non-RPC lines) ──
-        if "hovertext" in line.lower():
-            m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
+        # ── 2. Targeted regex: largeImage section only ────────────────────────
+        # Matches: "largeImage":{"hoverText":"BIOME",...}
+        # This handles lines where the JSON was cut off before closing braces.
+        if "largeImage" in line and "hoverText" in line:
+            m = re.search(
+                r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"',
+                line, re.IGNORECASE)
             if m:
                 candidate = m.group(1).strip().upper()
                 if candidate not in self._HOVER_IGNORE:
                     return candidate
 
         # ── 3. Plain-text word-boundary fallback ─────────────────────────────
-        for biome, pat in self._BIOME_WORD_RE.items():
-            if pat.search(line):
-                return biome
+        # Only used when there is no BloxstrapRPC/hoverText context on this line
+        # to avoid false positives from unrelated log lines.
+        if "BloxstrapRPC" not in line and "hoverText" not in line:
+            for biome, pat in self._BIOME_WORD_RE.items():
+                if pat.search(line):
+                    return biome
 
         return None
 
@@ -1594,17 +1605,20 @@ class SniperEngine:
 
     async def _log_monitor_loop(self):
         loop = asyncio.get_running_loop()
+        _last_logged_biome: Optional[str] = None
         while self._running:
             await asyncio.sleep(1)
             if not ProcessManager.is_roblox_running():
+                _last_logged_biome = None
                 continue
             try:
                 biome = await loop.run_in_executor(
                     None, self._log_reader.get_current_biome)
             except Exception:
                 continue
-            if biome:
+            if biome and biome != _last_logged_biome:
                 self._log(LogLevel.DEBUG, f"[BIOME] Current biome: {biome}", dev_only=True)
+                _last_logged_biome = biome
 
     # ── message handler ───────────────────────────────────────────────────────
 
@@ -1771,18 +1785,21 @@ class SniperEngine:
                 self._log_reader.mark_launch()
                 ProcessManager.open_roblox_link(uri)
 
-            if profile.verify_biome_name and self.config.anti_bait_enabled:
-                self._log(LogLevel.DEBUG,
-                    f"[JOIN] Spawning biome verification task for '{profile.verify_biome_name}'",
-                    dev_only=True)
-                asyncio.create_task(self._verify_biome(profile, uri))
-            else:
-                self._log(LogLevel.DEBUG,
-                    f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
-                    f"anti_bait={self.config.anti_bait_enabled})", dev_only=True)
         else:
             self._log(LogLevel.DEBUG, "[JOIN] auto_join_enabled=False — skipping join",
                 dev_only=True)
+
+        # ── Biome verification — runs regardless of auto_join_enabled ────────
+        # mark_launch() was already called above if we joined; if auto-join is
+        # off the log reader still needs to watch the existing session.
+        if profile.verify_biome_name and self.config.anti_bait_enabled:
+            self._log(LogLevel.INFO,
+                f"[ANTI-BAIT] Starting biome verification for '{profile.verify_biome_name.upper()}'…")
+            asyncio.create_task(self._verify_biome(profile, uri))
+        else:
+            self._log(LogLevel.DEBUG,
+                f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
+                f"anti_bait={self.config.anti_bait_enabled})", dev_only=True)
 
         # ── Sound alert ───────────────────────────────────────────────────────
         if getattr(self.config, "sound_alert_enabled", False):
@@ -1893,13 +1910,11 @@ class SniperEngine:
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         if not profile.verify_biome_name:
-            self._log(LogLevel.DEBUG,
-                "[ANTI-BAIT] No biome name configured — skipping verification", dev_only=True)
             return
         loop  = asyncio.get_running_loop()
-        self._log(LogLevel.DEBUG,
-            f"[ANTI-BAIT] Waiting for biome (expected: {profile.verify_biome_name.upper()}, "
-            f"timeout: 75s)…", dev_only=True)
+        expected = profile.verify_biome_name.upper()
+        self._log(LogLevel.INFO,
+            f"[ANTI-BAIT] Waiting for biome in log… (expected: {expected}, timeout: 75s)")
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(75.0))
 
@@ -1908,13 +1923,11 @@ class SniperEngine:
                 "[ANTI-BAIT] Biome verification timed out — no biome detected in log within 75s")
             return
 
-        expected = profile.verify_biome_name.upper()
         detected = biome.upper()
         matched  = (detected == expected)
 
-        self._log(LogLevel.DEBUG,
-            f"[ANTI-BAIT] Biome read from log: '{detected}' (expected: '{expected}')",
-            dev_only=True)
+        self._log(LogLevel.INFO,
+            f"[ANTI-BAIT] Log biome detected: '{detected}' (expected: '{expected}')")
 
         if matched:
             self._log(LogLevel.SUCCESS,
