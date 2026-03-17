@@ -175,8 +175,8 @@ EXE_NAME      = "SlaoqSniper"
 _UPDATE_TRIGGERED = False
 WIN_W         = 1200
 WIN_H         = 800
-WIN_MIN_W     = 980
-WIN_MIN_H     = 600
+WIN_MIN_W     = 760
+WIN_MIN_H     = 520
 SIDEBAR_MIN   = 70
 SIDEBAR_MAX   = 260
 SIDEBAR_RATIO = 0.20
@@ -186,35 +186,21 @@ TITLEBAR_H    = 38
 RESIZE_M      = 6
 
 def resource_path(relative_path: str) -> str:
-    """Resolve path for both dev mode and PyInstaller frozen mode.
-    Checks assets/ subfolder first, then falls back to current dir / _MEIPASS."""
-    # When frozen by PyInstaller, _MEIPASS is the temp extraction dir
     try:
         base = sys._MEIPASS
     except AttributeError:
         base = os.path.abspath(".")
-    # Prefer assets/ subfolder next to the exe (so users can replace files)
     exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.abspath(".")
     assets_path = os.path.join(exe_dir, "assets", relative_path)
     if os.path.exists(assets_path):
         return assets_path
-    # Fallback: bundled inside the exe via --add-data assets;assets
     bundled = os.path.join(base, "assets", relative_path)
     if os.path.exists(bundled):
         return bundled
-    # Last resort: same folder
     return os.path.join(base, relative_path)
 
 LOGO_PATH = Path(resource_path("logo.png"))
 ICO_PATH  = Path(resource_path("app.ico"))
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# INLINE MODULES  (blacklist · cooldown · plugin_loader · assets)
-# Previously separate files — merged here so the project is 2-file only.
-# ═════════════════════════════════════════════════════════════════════════════
-
-# ── Blacklist ─────────────────────────────────────────────────────────────────
 
 REASON_DELETED_LINK = "message_deleted"
 REASON_INVALID_LINK = "invalid_link"
@@ -282,7 +268,6 @@ class BlacklistManager:
     def add(self, user_id: str, username: str, reason: str = REASON_MANUAL,
             ttl_hours: float = 0.0):
         eff = (ttl_hours * 3600) if ttl_hours > 0 else self._ttl_secs
-        # Bug 2 fix: expires_at stored as wall-clock time.time() so it survives restarts
         exp = (time.time() + eff) if eff > 0 else 0.0
         with self._lock:
             if user_id in self._entries:
@@ -316,7 +301,7 @@ class BlacklistManager:
             return e
 
     def all_entries(self) -> list:
-        now = time.time()   # Bug 2 fix: compare against wall clock
+        now = time.time()  
         with self._lock:
             expired = [uid for uid, e in self._entries.items()
                        if e.expires_at > 0 and now > e.expires_at]
@@ -332,8 +317,6 @@ class BlacklistManager:
     def count(self) -> int:
         return len(self.all_entries())
 
-
-# ── Cooldown ──────────────────────────────────────────────────────────────────
 
 class CooldownConfig:
     def __init__(self, guild_ttl: float = 30.0, profile_ttl: float = 0.0,
@@ -404,9 +387,6 @@ class CooldownManager:
         with self._lock: return sum(1 for exp in self._state.values() if now < exp)
 
 
-
-# ── Snipe History ─────────────────────────────────────────────────────────────
-
 class SnipeHistoryManager:
     MAX_ENTRIES = 500
 
@@ -466,7 +446,6 @@ class SnipeHistoryManager:
                     entry["biome_verified"] = verified
                     self._save()
                     return
-            # Fallback: if ID not found (old entries), update last
             if self._entries:
                 self._entries[-1]["biome_verified"] = verified
                 self._save()
@@ -487,8 +466,6 @@ class SnipeHistoryManager:
             self._entries.clear()
             self._save()
 
-
-# ── Plugin Loader ─────────────────────────────────────────────────────────────
 
 _PLUGIN_REQUIRED = ("PLUGIN_NAME", "PLUGIN_ICON", "PLUGIN_DESCRIPTION")
 
@@ -607,8 +584,6 @@ class PluginLoader:
             self._save_states()
 
 
-# ── Asset Manager ─────────────────────────────────────────────────────────────
-
 ASSETS: dict[str, str] = {
     "logo.png": "https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png",
     "app.ico":  "",   # leave empty to skip
@@ -648,9 +623,6 @@ class AssetManager:
 
     def path(self, name: str) -> Path: return self._dir / name
     def exists(self, name: str) -> bool: return (self._dir / name).exists()
-
-
-# ═════════════════════════════════════════════════════════════════════════════
 
 
 class WebhookSender:
@@ -755,21 +727,17 @@ class WebhookSender:
             keyword          = kwargs.get("keyword", "")
             ts_unix          = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
-            # Author field — avatar icon + "Author: DisplayName (@username)"
             author_tag = f"@{author_name}" if author_name != author_display else f"@{author_display}"
             embed["author"] = {
                 "name":     f"Author: {author_display} ({author_tag})",
                 "icon_url": author_avatar if author_avatar else self.logo_url,
             }
 
-            # Title: "GLITCHED Biome Sniped" when biome is configured,
-            #        "Sniped" when the profile has no biome to verify.
             if verify_biome:
                 snipe_label = f"{verify_biome} Biome Sniped"
             else:
                 snipe_label = "Sniped"
 
-            # Description: header + join link
             desc_lines = [f"> # {snipe_label} — <t:{ts_unix}:R>", ""]
             if roblox_web_url and not roblox_web_url.startswith("roblox://"):
                 desc_lines.append(f"## [Join Private Server Link]({roblox_web_url})")
@@ -778,7 +746,6 @@ class WebhookSender:
             embed["description"] = "\n".join(desc_lines)
             embed["color"]       = 0xFFFFFF
 
-            # Inline fields: Keyword Detected | Profile
             kw_val      = f'`"{keyword}"`' if keyword else "—"
             profile_val = f"` {profile_name.upper()} `"
             embed["fields"] = [
@@ -871,14 +838,10 @@ THEMES = {
         "notif_yellow_border": "rgba(200,180,80,0.5)",
     },
     "light": {
-        # Warm white — primary surfaces
         "bg":      "#f9f8f6", "surface": "#f3f2ef", "card":    "#ffffff",
         "card2":   "#faf9f7", "border":  "#e4e2dd", "border2": "#d5d2cc",
-        # Typography — high contrast dark ink
         "text":    "#1c1b19", "muted":   "#7a7771", "dim":     "#a8a49f",
-        # "white" is the accent/highlight colour (used for active text, icons)
         "white":   "#1c1b19",
-        # Accent colours — slightly desaturated to match warm base
         "green":   "#1a7a4a", "green2":  "#1d9057",
         "red":     "#b83228", "red2":    "#d43f32",
         "yellow":  "#a87d00", "orange":  "#b85e00",
@@ -894,13 +857,11 @@ THEMES = {
 C: dict = dict(THEMES["dark"])
 
 def apply_theme(name: str):
-    """Update the global color dict C to the chosen theme."""
     palette = THEMES.get(name, THEMES["dark"])
     C.clear()
     C.update(palette)
 
 def make_qss() -> str:
-    """Generate the full application QSS from the current palette C."""
     return f"""
 * {{
     font-family: 'Segoe UI', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
@@ -947,15 +908,13 @@ QToolTip {{
 #ContentArea {{ background-color: {C['surface']}; }}
 #MetricCard {{
     background-color: {C['card']}; border: 1px solid {C['border']};
-    border-radius: 10px; min-height: 86px; max-height: 86px;
-    transition: background-color 120ms ease, border-color 120ms ease;
+    border-radius: 10px;
 }}
 #MetricCard:hover {{
     background-color: {C['card2']}; border: 1px solid {C['border2']};
 }}
 #CardLabel  {{ color: {C['muted']}; font-size: 9px; font-weight: 700; letter-spacing: 2px; }}
-#CardValue  {{ color: {C['white']}; font-size: 24px; font-weight: 800;
-               letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }}
+#CardValue  {{ color: {C['white']}; font-size: 24px; font-weight: 800; letter-spacing: -1.5px; }}
 #CardUnit   {{ color: {C['dim']};   font-size: 11px; }}
 #BadgeON   {{ background-color: rgba(0,204,102,0.10); color: {C['green2']};
               border: 1px solid rgba(0,204,102,0.25); border-radius: 9px;
@@ -1028,7 +987,7 @@ QComboBox QAbstractItemView {{
     background-color: {C['white']}; color: #000;
     border: none; border-radius: 7px;
     padding: 9px 22px; font-size: 12px; font-weight: 700;
-    min-width: 120px; min-height: 34px;
+    min-width: 80px; min-height: 34px;
 }}
 #PrimaryBtn:hover    {{ background-color: #e8e8e8; }}
 #PrimaryBtn:pressed  {{ background-color: #cccccc; }}
@@ -1037,7 +996,7 @@ QComboBox QAbstractItemView {{
     background-color: transparent; color: {C['red2']};
     border: 1px solid rgba(231,76,60,0.22); border-radius: 7px;
     padding: 9px 22px; font-size: 12px; font-weight: 600;
-    min-width: 120px; min-height: 34px;
+    min-width: 80px; min-height: 34px;
 }}
 #DangerBtn:hover {{
     background-color: rgba(231,76,60,0.06);
@@ -1047,7 +1006,7 @@ QComboBox QAbstractItemView {{
     background-color: transparent; color: {C['yellow']};
     border: 1px solid rgba(255,204,0,0.22); border-radius: 7px;
     padding: 9px 22px; font-size: 12px; font-weight: 600;
-    min-width: 120px; min-height: 34px;
+    min-width: 80px; min-height: 34px;
 }}
 #PauseBtn:hover {{
     background-color: rgba(255,204,0,0.06);
@@ -1134,9 +1093,9 @@ QProgressBar::chunk {{
 # SVG ICON LIBRARY
 
 SVG = {
-    # ── Navigation / sidebar ──────────────────────────────────────────────────
+    # Navigation / sidebar
     "home":          '<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
-    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>',
+    "settings":      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
     "logs":          '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
     "bell":          '<path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>',
     "clock":         '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
@@ -1144,13 +1103,13 @@ SVG = {
     "webhook":       '<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
     "lock":          '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>',
 
-    # ── Window controls ───────────────────────────────────────────────────────
+    # Window controls
     "minimize":      '<line x1="5" y1="12" x2="19" y2="12"/>',
     "maximize":      '<rect x="3" y="3" width="18" height="18" rx="2"/>',
     "restore":       '<path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>',
     "close":         '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
 
-    # ── Playback ──────────────────────────────────────────────────────────────
+    # Playback
     "play":          '<polygon points="5 3 19 12 5 21 5 3"/>',
     "stop":          '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>',
     "pause":         '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
@@ -1161,7 +1120,7 @@ SVG = {
     "volume-x":      '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>',
     "music":         '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
 
-    # ── Files & I/O ───────────────────────────────────────────────────────────
+    # Files & I/O
     "export":        '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
     "import":        '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
     "upload":        '<polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>',
@@ -1175,7 +1134,7 @@ SVG = {
     "clipboard":     '<path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>',
     "trash":         '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>',
 
-    # ── Network / comms ───────────────────────────────────────────────────────
+    # Network / comms
     "wifi":          '<path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
     "wifi-off":      '<line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0119 12.55"/><path d="M5 12.55a11 11 0 015.17-2.39"/><path d="M10.71 5.05A16 16 0 0122.56 9"/><path d="M1.42 9a15.91 15.91 0 014.7-2.88"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>',
     "link":          '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>',
@@ -1189,7 +1148,7 @@ SVG = {
     "send":          '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
     "share":         '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
 
-    # ── Status / feedback ─────────────────────────────────────────────────────
+    # Status / feedback
     "check":         '<polyline points="20 6 9 17 4 12"/>',
     "check-circle":  '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
     "x-circle":      '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
@@ -1201,7 +1160,7 @@ SVG = {
     "shield":        '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
     "shield-check":  '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>',
 
-    # ── User / social ─────────────────────────────────────────────────────────
+    # User / social 
     "user":          '<path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>',
     "users":         '<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>',
     "user-plus":     '<path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>',
@@ -1210,7 +1169,7 @@ SVG = {
     "message":       '<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>',
     "message-circle":'<path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>',
 
-    # ── Tools / actions ───────────────────────────────────────────────────────
+    # Tools / actions
     "refresh":       '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>',
     "edit":          '<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>',
     "edit-2":        '<path d="M17 3a2.828 2.828 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
@@ -1238,7 +1197,7 @@ SVG = {
     "tag":           '<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
     "hash":          '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>',
 
-    # ── Arrows / chevrons ─────────────────────────────────────────────────────
+    # ─ Arrows / chevrons
     "chevron-left":  '<polyline points="15 18 9 12 15 6"/>',
     "chevron-right": '<polyline points="9 18 15 12 9 6"/>',
     "chevron-up":    '<polyline points="18 15 12 9 6 15"/>',
@@ -1249,7 +1208,7 @@ SVG = {
     "arrow-right":   '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
     "move":          '<polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>',
 
-    # ── Misc ──────────────────────────────────────────────────────────────────
+    # Misc 
     "plus":          '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
     "minus":         '<line x1="5" y1="12" x2="19" y2="12"/>',
     "x":             '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
@@ -1344,7 +1303,6 @@ def create_taskbar_icon() -> QIcon:
     return QIcon(bg)
 
 def get_tray_icon_img() -> QImage:
-    """Returns the logo as a QImage for system tray notifications."""
     if LOGO_PATH.exists():
         return QImage(str(LOGO_PATH)).scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     return QImage()
@@ -1356,7 +1314,6 @@ def lbl(text: str, obj: str = "", css: str = "") -> QLabel:
     return w
 
 class _GradientHDivider(QFrame):
-    """Horizontal divider that fades from transparent at edges to border colour at centre."""
     def __init__(self):
         super().__init__()
         self.setObjectName("HDivider")
@@ -1423,7 +1380,6 @@ class Bridge(QObject):
     def __init__(self, cfg: SniperConfig):
         super().__init__()
 
-        # ── Build subsystem managers ──────────────────────────────────────
         app_dir = _get_app_dir()
 
         bl   = BlacklistManager(app_dir / "blacklist.json")
@@ -1445,7 +1401,6 @@ class Bridge(QObject):
         pl = PluginLoader(plugins_dir)
         pl.discover()
 
-        # ── Build engine with injected managers ───────────────────────────
         self.engine  = SniperEngine(cfg, blacklist=bl, cooldown=cd, plugins=pl)
         self.history = hist
         self.blacklist_mgr = bl
@@ -1456,7 +1411,6 @@ class Bridge(QObject):
         self._webhook_session: Optional[aiohttp.ClientSession] = None
         self._last_snipe_id: str = ""
 
-        # ── Wire engine callbacks ─────────────────────────────────────────
         self.engine.on_log    = self.sig_log.emit
         self.engine.on_status = self.sig_status.emit
         self.engine.on_paused = self.sig_paused.emit
@@ -1464,7 +1418,6 @@ class Bridge(QObject):
 
         def _on_snipe(data: dict):
             snipe_id = hist.record(data)
-            # Store latest snipe_id on the bridge so _on_biome can target it
             self._last_snipe_id = snipe_id
             self.sig_snipe.emit(data)
             if self._loop and self._loop.is_running():
@@ -1472,7 +1425,6 @@ class Bridge(QObject):
                     self._send_snipe_webhook(data), self._loop)
 
         def _on_biome(exp: str, det: str, ok: bool):
-            # Bug 6 fix: use snipe_id to update the correct history entry
             snipe_id = getattr(self, "_last_snipe_id", "")
             if snipe_id:
                 hist.update_biome_by_id(snipe_id, ok)
@@ -1630,7 +1582,6 @@ class ToggleSwitch(QWidget):
 
 
 class PropagatingListWidget(QListWidget):
-    """List widget that passes wheel events to the parent scroll area when it has nothing to scroll."""
     def wheelEvent(self, e):
         bar   = self.verticalScrollBar()
         delta = e.angleDelta().y()
@@ -1642,26 +1593,13 @@ class PropagatingListWidget(QListWidget):
         can_scroll_down = not at_bottom and delta < 0
 
         if empty or (not can_scroll_up and not can_scroll_down):
-            # Nothing to scroll here — let the parent SmoothScrollArea handle it
             e.ignore()
         else:
             super().wheelEvent(e)
 
 
 class SmoothScrollArea(QScrollArea):
-    """
-    Scroll area with momentum-based smooth scrolling and smart child delegation.
-
-    Child delegation rule:
-    - If the mouse has been hovering over a scrollable child widget for more
-      than HOVER_MS milliseconds, wheel events go to that child.
-    - If the mouse is moving quickly across children (fast scroll through page),
-      the outer page handles all scroll — nested widgets don't steal.
-
-    This means: scrolling fast through the page always works. Only when you
-    deliberately rest the mouse over a list/text area does that widget take over.
-    """
-    HOVER_MS   = 500    # ms the mouse must dwell over a child before it "owns" scroll
+    HOVER_MS   = 900    # ms the mouse must dwell over a child before it "owns" scroll
     STEP_PX    = 80     # pixels per scroll notch
     EASE       = 0.20   # easing factor per frame (higher = snappier)
 
@@ -1672,9 +1610,8 @@ class SmoothScrollArea(QScrollArea):
         self._anim_timer.setInterval(12)
         self._anim_timer.timeout.connect(self._tick)
 
-        # Hover tracking
-        self._hover_child  = None   # which scrollable child is under mouse
-        self._hover_start  = 0.0    # monotonic time when hover began
+        self._hover_child  = None  
+        self._hover_start  = 0.0   
         self.setMouseTracking(True)
 
     def _tick(self):
@@ -1687,14 +1624,11 @@ class SmoothScrollArea(QScrollArea):
         bar.setValue(int(round(bar.value() + diff * self.EASE)))
 
     def _scrollable_child_at(self, pos) -> Optional["QWidget"]:
-        """Return the innermost scrollable widget under pos (in self coords), or None."""
         child = self.widget()
         if not child:
             return None
-        # Convert to inner widget coordinates
         inner_pos = child.mapFrom(self, pos)
         w = child.childAt(inner_pos)
-        # Walk up looking for a QAbstractScrollArea (but not self)
         from PySide6.QtWidgets import QAbstractScrollArea
         while w is not None and w is not self and w is not child:
             if isinstance(w, QAbstractScrollArea):
@@ -1723,7 +1657,6 @@ class SmoothScrollArea(QScrollArea):
             e.ignore()
             return
 
-        # Check if the mouse has been dwelling over a scrollable child long enough
         if (self._hover_child is not None
                 and time.monotonic() - self._hover_start >= self.HOVER_MS / 1000.0):
             child = self._hover_child
@@ -1732,11 +1665,9 @@ class SmoothScrollArea(QScrollArea):
             at_top = sb.value() == sb.minimum()
             at_bot = sb.value() == sb.maximum()
             if (delta > 0 and not at_top) or (delta < 0 and not at_bot):
-                # Child still has room — delegate
                 e.ignore()
                 return
 
-        # Outer page handles this scroll
         steps = e.angleDelta().y() / 120.0
         self._target = max(float(bar.minimum()),
                            min(float(bar.maximum()),
@@ -1765,7 +1696,6 @@ class EdgeCursorFilter(QObject):
 
 
 class ChannelItemRow(QFrame):
-    """Single channel row inside a server group — shows only the channel portion."""
     delete_requested = Signal()
     changed          = Signal()
 
@@ -1818,7 +1748,6 @@ class ChannelItemRow(QFrame):
 
 
 class ServerGroupHeader(QFrame):
-    """Non-interactive header that shows a server name above its channel rows."""
     def __init__(self, guild_name: str, parent=None):
         super().__init__(parent)
         self.setObjectName("ChannelRow")
@@ -1834,10 +1763,9 @@ class ServerGroupHeader(QFrame):
         lay.addWidget(name_lbl); lay.addStretch()
 
 
-# Keep ChannelRow as a thin alias for backward compat with any plugin that might reference it
 class ChannelRow(ChannelItemRow):
     def __init__(self, ch: "ChannelConfig", parent=None):
-        # extract the channel label from the full name
+
         name = ch.name or ""
         if "›" in name:
             channel_label = name.split("›", 1)[1].strip()
@@ -1865,13 +1793,14 @@ class StatusBadge(QLabel):
 
 class MetricCard(QFrame):
     _BASE_H  = 86
-    _HOVER_H = 92      # slightly taller on hover
+    _HOVER_H = 92   
 
     def __init__(self, label: str, value: str = "—", unit: str = ""):
         super().__init__()
         self.setObjectName("MetricCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(self._BASE_H)
+        self.setMinimumHeight(self._BASE_H)
+        self.setMaximumHeight(self._BASE_H)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         lay = QVBoxLayout(self); lay.setContentsMargins(16, 10, 16, 10); lay.setSpacing(3)
         self._v = lbl(value, "CardValue")
@@ -1893,10 +1822,15 @@ class MetricCard(QFrame):
     def set_value(self, v: str):
         self._v.setText(v)
 
+    def set_card_height(self, h: int):
+        self._h_anim.stop(); self._h_anim2.stop()
+        self.setMinimumHeight(h); self.setMaximumHeight(h)
+
     def _animate_to(self, h: int):
+        cur = self.minimumHeight()
         for anim, prop in ((self._h_anim, b"maximumHeight"), (self._h_anim2, b"minimumHeight")):
             anim.stop()
-            anim.setStartValue(self.height())
+            anim.setStartValue(cur)
             anim.setEndValue(h)
             anim.start()
 
@@ -1910,7 +1844,6 @@ class MetricCard(QFrame):
 
 
 class _GlowLogoLabel(QLabel):
-    """QLabel with a soft radial glow painted behind the logo."""
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1948,6 +1881,7 @@ class NavButton(QPushButton):
         self.setProperty("active", v)
         self.style().unpolish(self); self.style().polish(self)
         self.setIcon(self._ic_act if v else self._ic)
+        self._apply_sizes()
         self.update()
 
     def show_text(self, wide: bool):
@@ -1955,9 +1889,22 @@ class NavButton(QPushButton):
             self._wide = wide; self._apply()
 
     def set_style(self, font_size: int, icon_size: int):
+        self._base_font = font_size
+        self._base_icon = icon_size
+        self._apply_sizes()
+
+    def _apply_sizes(self):
+        base_f = getattr(self, "_base_font", 11)
+        base_i = getattr(self, "_base_icon", 18)
+        if self._active:
+            f = base_f + 1        # +1 px font
+            i = base_i + 2        # +2 px icon
+            self.setStyleSheet(f"font-size: {f}px; font-weight: 800;")
+        else:
+            self.setStyleSheet(f"font-size: {base_f}px; font-weight: 800;")
+            i = base_i
         self.setIcon(self._ic_act if self._active else self._ic)
-        self.setIconSize(QSize(icon_size, icon_size))
-        self.setStyleSheet(f"font-size: {font_size}px; font-weight: 800;")
+        self.setIconSize(QSize(i, i))
 
     def _apply(self):
         if self._wide:
@@ -1966,6 +1913,8 @@ class NavButton(QPushButton):
         else:
             self.setText(""); self.setToolTip(self._text)
             self.setMinimumWidth(40); self.setMaximumWidth(40)
+
+
 
 
 class KeySequenceEdit(QLineEdit):
@@ -2051,7 +2000,7 @@ class SplashScreen(QWidget):
 
     # logo
     _LOGO_SZ   = 88
-    _LOGO_GAP  = 5           # gap between logo right edge and "SLAOQ" left edge
+    _LOGO_GAP  = 3           # gap between logo right edge and "SLAOQ" left edge
     _LOGO_Y    = 96          # top-y of logo row
 
     # subtitle
@@ -2063,8 +2012,8 @@ class SplashScreen(QWidget):
 
     # speeds (increment per 16 ms frame)
     _FADE_IN_SPD   = 0.038   # ~420 ms
-    _SLIDE_SPD     = 0.013   # ~1250 ms (slow, deliberate)
-    _BRAND_SPD     = 0.022   # ~730 ms  (brand slides after logo lands)
+    _SLIDE_SPD     = 0.013   # ~1250 ms
+    _BRAND_SPD     = 0.022   # ~730 ms 
     _SUB_SPD       = 0.018   # ~890 ms
     _BOTTOM_SPD    = 0.028   # ~570 ms
     _FADE_OUT_SPD  = 0.048   # ~330 ms
@@ -2117,7 +2066,6 @@ class SplashScreen(QWidget):
             "border:1px solid #181818;"
             "border-radius:20px;}")
 
-        # glow overlay (transparent, behind everything)
         self._glow = _SplashGlowWidget(self, sz, gap, ly)
         self._glow.setGeometry(0, 0, W, H)
         self._glow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -2136,7 +2084,6 @@ class SplashScreen(QWidget):
             self._logo_lbl.setPixmap(px)
         self._logo_lbl.move(self._logo_cx_start - sz // 2, ly)
 
-        # "SLAOQ" brand
         self._brand_lbl = QLabel("SLAOQ", self._root)
         self._brand_lbl.setStyleSheet(
             "color:#ffffff;font-size:34px;font-weight:800;"
@@ -2165,22 +2112,21 @@ class SplashScreen(QWidget):
             brand_w=bw, brand_h=bh)
 
         # subtitle
-        self._sub_y_end   = ly + sz + 16
+        self._sub_y_end   = ly + sz + 10   # closer to logo row
         self._sub_y_start = self._sub_y_end + self._SUB_RISE
 
         self._sub_lbl = QLabel("SOL'S RNG SNIPER", self._root)
         self._sub_lbl.setFixedWidth(W)
         self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._sub_lbl.setStyleSheet(
-            "color:#4a4a4a;font-size:10px;font-weight:700;"
-            "letter-spacing:5px;background:transparent;")
+            "color:#555555;font-size:12px;font-weight:700;"
+            "letter-spacing:4px;background:transparent;")
         self._sub_lbl.move(0, self._sub_y_start)
 
         self._sub_eff = QGraphicsOpacityEffect(self._sub_lbl)
         self._sub_eff.setOpacity(0.0)
         self._sub_lbl.setGraphicsEffect(self._sub_eff)
 
-        # progress bar + task label
         pad   = self._BAR_PAD
         bar_w = W - pad * 2
 
@@ -2210,7 +2156,6 @@ class SplashScreen(QWidget):
         self._step_timer.setInterval(680)
         self._step_timer.timeout.connect(self._step)
 
-    # ── easing ────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _ease_out_expo(t):
@@ -2224,8 +2169,6 @@ class SplashScreen(QWidget):
     def _ease_in_out_sine(t):
         import math
         return -(math.cos(math.pi * t) - 1.0) / 2.0
-
-    # ── tick ──────────────────────────────────────────────────────────────────
 
     def _tick(self):
         if self._opacity < 1.0:
@@ -2289,7 +2232,6 @@ class SplashScreen(QWidget):
                 self._step_timer.start()
 
         elif self._phase == 2:
-            # bar fades in + steps tick
             if self._bottom_alpha < 1.0:
                 self._bottom_alpha = min(1.0, self._bottom_alpha + self._BOTTOM_SPD)
                 self._bottom_eff.setOpacity(self._ease_in_out_sine(self._bottom_alpha))
@@ -2299,7 +2241,6 @@ class SplashScreen(QWidget):
                 self._bar_value += diff * 0.07
                 self._bar_w.set_progress(self._bar_value, len(self._TASKS))
 
-    # ── step / update ─────────────────────────────────────────────────────────
 
     def start(self):
         self.setWindowOpacity(0.0)
@@ -2377,7 +2318,6 @@ class SplashScreen(QWidget):
 
 
 class _SplashGlowWidget(QWidget):
-    """Transparent overlay — paints soft glow halos via true gradients (no solid shapes)."""
 
     def __init__(self, parent, sz, gap, ly):
         super().__init__(parent)
@@ -2426,7 +2366,6 @@ class _SplashGlowWidget(QWidget):
         p.drawEllipse(int(cx - gr), int(cy - gr), int(gr * 2), int(gr * 2))
 
         if not self._logo_only:
-            # brand text glow — linear gradient fading to transparent at edges
             bx, by, bw, bh = self._bx, self._by, self._bw, self._bh
             pad = 26.0
             hg = QLinearGradient(bx - pad, 0, bx + bw + pad, 0)
@@ -2480,8 +2419,6 @@ def _needs_update() -> tuple:
     return True, remote_sha
 
 def _ensure_build_script() -> Optional[Path]:
-    """Return the path to the build script, downloading it if needed.
-    Uses build.bat on Windows, build.sh on macOS/Linux."""
     exe_dir = _get_exe_dir()
     _system = platform.system()
     if _system == "Windows":
@@ -2505,19 +2442,16 @@ def _ensure_build_script() -> Optional[Path]:
             script.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
         else:
             script.write_bytes(raw)
-            # Make executable on Unix
             script.chmod(script.stat().st_mode | 0o111)
         return script
     except Exception as exc:
         print(f"[Updater] Could not fetch {remote_name}: {exc}")
         return None
 
-# Keep legacy name for any internal callers
 _ensure_bat = _ensure_build_script
 
 
 def _launch_bat_update() -> bool:
-    """Launch the build/update script in a new terminal window, cross-platform."""
     global _UPDATE_TRIGGERED
     if _UPDATE_TRIGGERED:
         return False
@@ -2560,7 +2494,6 @@ def _launch_bat_update() -> bool:
             )
 
         elif _system == "Darwin":
-            # Open a new Terminal.app window running the build script
             apple_script = (
                 f'tell application "Terminal" to do script '
                 f'"bash \\"{script}\\" --update \\"{target}\\""'
@@ -2703,7 +2636,6 @@ class Sidebar(QFrame):
     def __init__(self):
         super().__init__()
         self.setObjectName("Sidebar")
-        # COMEÇA EXPANDIDO (SIDEBAR_LG)
         self.setFixedWidth(SIDEBAR_LG)
         self.setMouseTracking(True)
 
@@ -2711,11 +2643,9 @@ class Sidebar(QFrame):
         self._target_y:   float = -1.0
         self._anim_h:     int   = 32
         self._active_idx: int   = 0
-        # Animated white indicator (click, not hover)
         self._act_anim_y: float = -1.0   # white bar y
         self._act_target_y: float = -1.0
         self._act_anim_h: int   = 32
-        # ESTADO INICIAL: EXPANDIDO (False = não colapsado)
         self._collapsed:  bool  = False
 
         self._ind_timer = QTimer(self)
@@ -2726,17 +2656,14 @@ class Sidebar(QFrame):
         self._act_timer.setInterval(12)
         self._act_timer.timeout.connect(self._tick_act_indicator)
 
-        # --- Layout Principal ---
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 14, 8, 14) 
         lay.setSpacing(0)
         lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # --- Área da Logo ---
         self._logo = _GlowLogoLabel()
         self._logo.setObjectName("SidebarLogo")
         self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Tamanho inicial compatível com sidebar expandida
         self._logo.setFixedSize(64, 64) 
 
         lc = QVBoxLayout()
@@ -2745,13 +2672,12 @@ class Sidebar(QFrame):
         lc.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lc.addWidget(self._logo, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Textos (visíveis no início pois está expandido)
         self._ln = lbl("SLAOQ'S", "SidebarName")
         self._ln.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ls = lbl("Sol's RNG SNIPER", "SidebarSub")
         self._ls.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._ln.setVisible(True) # Visível inicialmente
-        self._ls.setVisible(True) # Visível inicialmente
+        self._ln.setVisible(True)
+        self._ls.setVisible(True) 
         lc.addWidget(self._ln)
         lc.addWidget(self._ls)
         
@@ -2760,7 +2686,6 @@ class Sidebar(QFrame):
         lay.addWidget(hdiv())
         lay.addSpacing(12)
 
-        # --- Botões de Navegação ---
         self._btns: list[NavButton] = []
         for i, (k, t) in enumerate(_PAGES):
             b = NavButton(k, t)
@@ -2772,10 +2697,8 @@ class Sidebar(QFrame):
 
         lay.addStretch()
 
-        # --- Botão de Recolher/Expandir ---
         self._toggle_btn = QPushButton()
         self._toggle_btn.setObjectName("GhostBtn")
-        # ÍNCONA INICIAL: Como está expandido, mostra seta para ESQUERDA (para poder recolher)
         self._toggle_btn.setIcon(_svg_icon("chevron-left", C["dim"], 14))
         self._toggle_btn.setIconSize(QSize(14, 14))
         self._toggle_btn.setFixedSize(32, 32)
@@ -2834,7 +2757,6 @@ class Sidebar(QFrame):
         anim2.setEndValue(target_w)
         anim2.start()
 
-        # Lógica do ícone corrigida
         icon_key = "chevron-right" if self._collapsed else "chevron-left"
         self._toggle_btn.setIcon(_svg_icon(icon_key, C["dim"], 14))
 
@@ -2891,20 +2813,19 @@ class Sidebar(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Animated hover background
         if self._anim_y >= 0:
             p.setBrush(QColor("#0e0e0e"))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(4, int(self._anim_y), self.width() - 8, self._anim_h, 6, 6)
 
-        # Animated white bar — follows click, not hover
-        # 2 px wide, vertically centred on the button, rounded caps
         if self._act_anim_y >= 0:
-            bar_h   = min(20, max(12, self._act_anim_h - 14))
-            bar_y   = int(self._act_anim_y) + (self._act_anim_h - bar_h) // 2
+            btn_h = self._act_anim_h
+            by    = int(self._act_anim_y)
+            bar_h = max(16, int(btn_h * 0.55))
+            bar_y = by + (btn_h - bar_h) // 2
             p.setBrush(QColor(C["white"]))
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(3, bar_y, 2, bar_h, 1, 1)
+            p.drawRoundedRect(2, bar_y, 3, bar_h, 1, 1)
 
         p.end()
 
@@ -2987,7 +2908,6 @@ class Sidebar(QFrame):
         scaled = self._base_pixmap.scaled(
             max_w, max_w, Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
-        # Keep label exactly as big as the scaled image so nothing gets clipped
         self._logo.setFixedSize(scaled.width(), scaled.height())
         self._logo.setPixmap(scaled)
 
@@ -3005,6 +2925,7 @@ class DashboardPage(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self); lay.setContentsMargins(26, 22, 26, 22); lay.setSpacing(14)
+        self._lay = lay  
 
         # Header
         hdr = QHBoxLayout()
@@ -3015,7 +2936,7 @@ class DashboardPage(QWidget):
         self.badge = StatusBadge("idle"); hdr.addWidget(self.badge)
         lay.addLayout(hdr); lay.addWidget(hdiv())
 
-        # ── Compact 2×3 metrics grid ──────────────────────────────────────────
+        # Compact 2×3 metrics grid
         #   Row 1: [Snipes]  [Ping]    [Status]
         #   Row 2: [Roblox]  [Uptime]  [Messages]
         grid = QGridLayout(); grid.setSpacing(8)
@@ -3039,7 +2960,6 @@ class DashboardPage(QWidget):
 
         lay.addLayout(grid)
 
-        # Control buttons
         br = QHBoxLayout(); br.setSpacing(10)
         self._s = QPushButton("  Start Sniper")
         self._s.setIcon(_svg_icon("play", "#000000", 16))
@@ -3061,17 +2981,18 @@ class DashboardPage(QWidget):
         self._p.setFixedHeight(42); self._p.setEnabled(False)
         self._p.clicked.connect(self.pause_requested.emit)
 
-        br.addWidget(self._s); br.addWidget(self._e); br.addWidget(self._p); br.addStretch()
+        for btn in (self._s, self._e, self._p):
+            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        br.addWidget(self._s); br.addWidget(self._e); br.addWidget(self._p)
+        br.addStretch()
         lay.addLayout(br)
 
-        # Recent activity log
         lay.addWidget(lbl("RECENT ACTIVITY", "SecTitle"))
         self.mini = QTextEdit(); self.mini.setObjectName("LogConsole")
         self.mini.setReadOnly(True)
         self.mini.setPlaceholderText("Waiting for connection…")
         lay.addWidget(self.mini, 1)
 
-        # Hotkey configuration card
         hk_card = QFrame(); hk_card.setObjectName("SettCard")
         hk_lay  = QVBoxLayout(hk_card); hk_lay.setContentsMargins(12, 12, 12, 12); hk_lay.setSpacing(8)
 
@@ -3103,7 +3024,6 @@ class DashboardPage(QWidget):
         hk_lay.addLayout(ps_row)
         lay.addWidget(hk_card)
 
-        # In-app notification bar
         self._notif_frame = QFrame(); self._notif_frame.setObjectName("NotifFrame")
         self._notif_frame.setFixedHeight(40); self._notif_frame.setVisible(False)
 
@@ -3126,13 +3046,37 @@ class DashboardPage(QWidget):
             f"QPushButton:hover {{ color: {C['white']}; }}")
         notif_lay.addWidget(close_btn)
         lay.addWidget(self._notif_frame)
+        QTimer.singleShot(0, self._adapt_to_size)
 
-        # Connect hotkey signals
         self._tg_key.keySequenceChanged.connect(self._emit_config)
         self._tg_chk.toggled.connect(self._emit_config)
         self._ps_key.keySequenceChanged.connect(self._emit_config)
         self._ps_chk.toggled.connect(self._emit_config)
         self._ps_dur.valueChanged.connect(self._emit_config)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._adapt_to_size()
+
+    def _adapt_to_size(self):
+        w, h = self.width(), self.height()
+
+        pad_h = max(12, min(26, int(w * 0.027)))
+        pad_v = max(12, min(22, int(h * 0.028)))
+        self._lay.setContentsMargins(pad_h, pad_v, pad_h, pad_v)
+        self._lay.setSpacing(max(8, min(14, int(h * 0.018))))
+
+        card_h  = max(64, min(90, int(h * 0.115)))
+        hover_h = card_h + 6
+        for card in (self.c_snipes, self.c_ping, self.c_status,
+                     self.c_roblox, self.c_uptime, self.c_messages):
+            card._BASE_H  = card_h
+            card._HOVER_H = hover_h
+            card.set_card_height(card_h)
+
+        btn_h = max(34, min(42, int(h * 0.065)))
+        for btn in (self._s, self._e, self._p):
+            btn.setFixedHeight(btn_h)
 
     def update_engine_metrics(self, metrics: dict):
         """Called by the timer tick to sync engine metrics into the grid cards."""
@@ -3322,7 +3266,7 @@ class ProfileEditor(QWidget):
         fl.addLayout(bl_hdr)
         self._bl = self._kw_widget(fl, is_blacklist=True)
 
-        # ── Per-profile custom sound ──────────────────────────────────────────
+        # Per-profile custom sound
         fl.addWidget(hdiv())
         snd_hdr = QHBoxLayout()
         snd_hdr.addWidget(lbl("CUSTOM SOUND FILE", "GrpLabel"))
@@ -3340,7 +3284,7 @@ class ProfileEditor(QWidget):
         self._snd_path.setMinimumWidth(180)
         self._snd_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._snd_path.textChanged.connect(self._on_snd_path)
-        snd_row.addWidget(self._snd_path, 1)   # stretch=1 so field expands
+        snd_row.addWidget(self._snd_path, 1) 
 
         snd_browse = QPushButton("  Browse…"); snd_browse.setObjectName("SmallBtn")
         snd_browse.setIcon(_svg_icon("folder-open", C["muted"], 14))
@@ -3644,7 +3588,6 @@ class SettingsPage(QWidget):
         btn_del = QPushButton("Delete"); btn_del.setObjectName("SmallDangerBtn")
         btn_del.clicked.connect(self._del_profile)
 
-        # Priority reorder buttons
         btn_up   = QPushButton("↑"); btn_up.setObjectName("SmallBtn")
         btn_up.setFixedWidth(30); btn_up.setToolTip("Move profile up (higher priority)")
         btn_up.clicked.connect(self._move_profile_up)
@@ -3671,12 +3614,10 @@ class SettingsPage(QWidget):
         row = self._plist.currentRow()
         if row <= 0:
             return
-        # Swap in config list (keep Global locked at index 0)
         p = self._cfg.profiles
         if p[row - 1].locked:
             return
         p[row - 1], p[row] = p[row], p[row - 1]
-        # Update priority values to reflect order
         self._sync_profile_priorities()
         self._refresh_profiles()
         self._plist.setCurrentRow(row - 1)
@@ -4021,7 +3962,6 @@ class SettingsPage(QWidget):
             self._refresh_ch(); self._schedule_save()
 
     def _refresh_ch(self):
-        # Clear the entire layout (removes both tracked widgets and stretch spacers)
         while self._ch_vlay.count():
             item = self._ch_vlay.takeAt(0)
             w = item.widget()
@@ -4039,7 +3979,6 @@ class SettingsPage(QWidget):
             self._ch_vlay.addStretch()
             return
 
-        # Group channels by guild_id, preserving insertion order
         from collections import OrderedDict
         groups: OrderedDict = OrderedDict()
         for i, ch in enumerate(channels):
@@ -4049,20 +3988,17 @@ class SettingsPage(QWidget):
             groups[gid].append((i, ch))
 
         for guild_id, items in groups.items():
-            # Derive server display name from first channel's name
             first_name = items[0][1].name or ""
             if "›" in first_name:
                 guild_display = first_name.split("›", 1)[0].strip()
             else:
                 guild_display = guild_id
 
-            # Server header
             header = ServerGroupHeader(guild_display)
             self._ch_vlay.addWidget(header)
             self._ch_rows.append(header)
 
             for (idx, ch) in items:
-                # Channel label = part after "›", or full name
                 if "›" in (ch.name or ""):
                     channel_label = ch.name.split("›", 1)[1].strip()
                 else:
@@ -4154,11 +4090,9 @@ class SettingsPage(QWidget):
         action_names = ["none", "kill", "home"]
         self._cfg.biome_leave_action      = action_names[self._biome_leave_combo.currentIndex()]
         self._cfg.anti_bait_enabled       = self._chk_ab.isChecked()
-        # Cooldown TTLs
         self._cfg.cooldown_guild_ttl      = float(self._spn_cd_guild.value())
         self._cfg.cooldown_profile_ttl    = float(self._spn_cd_profile.value())
         self._cfg.cooldown_link_ttl       = float(self._spn_cd_link.value())
-        # Sound alert
         self._cfg.sound_alert_enabled     = self._chk_sound.isChecked()
         self._cfg.sound_alert_freq        = self._spn_sound_freq.value()
         self._cfg.sound_alert_dur_ms      = self._spn_sound_dur.value()
@@ -4166,7 +4100,6 @@ class SettingsPage(QWidget):
             self._cfg.log_to_file    = self._chk_lf.isChecked()
             self._cfg.log_tail_bytes = self._spn_tail.value()
         self._cfg.ensure_global()
-        # Sync profile priorities before save so they persist
         self._sync_profile_priorities()
         for p in self._cfg.profiles: p.compile()
         self._cfg.save()
@@ -4175,7 +4108,6 @@ class SettingsPage(QWidget):
 
     def _export_config(self):
         """Export current config.json to a user-chosen path."""
-        # Flush unsaved changes first
         self._save()
         src = Path(self._cfg.config_path)
         if not src.exists():
@@ -4234,8 +4166,6 @@ class SettingsPage(QWidget):
         from sniper_engine import SniperConfig as _SC
         new_cfg = _SC.load(str(dst))
         self._cfg = new_cfg
-        # Reload the whole page UI with new config
-        # Easiest: signal the parent to rebuild — emit config_saved
         apply_theme(new_cfg.theme)
         app = QApplication.instance()
         if app:
@@ -4267,7 +4197,6 @@ class LogsPage(QWidget):
         col.addWidget(lbl("Logs", "PageTitle"))
         hdr.addLayout(col); hdr.addStretch()
 
-        # Level filter
         self._filter_combo = QComboBox()
         self._filter_combo.addItems(["All", "INFO", "SUCCESS", "WARN", "ERROR", "DEBUG", "SNIPE"])
         self._filter_combo.setFixedWidth(90)
@@ -4294,7 +4223,6 @@ class LogsPage(QWidget):
         foot.addWidget(self._lc); foot.addStretch(); foot.addWidget(self._dbdg)
         lay.addLayout(foot)
 
-        # Buffer for filtered replay
         self._buffer: list[LogEntry] = []
 
     def _on_filter_changed(self, idx: int):
@@ -4519,9 +4447,7 @@ class NotificationsPage(QWidget):
 
         threading.Thread(target=_run, daemon=True, name="WebhookTest").start()
 
-# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: BLACKLIST
-# ─────────────────────────────────────────────────────────────────────────────
 
 class BlacklistPage(QWidget):
     _fetch_done     = Signal(str, str)
@@ -4546,7 +4472,7 @@ class BlacklistPage(QWidget):
         outer.setContentsMargins(26, 22, 26, 16)
         outer.setSpacing(14)
 
-        # ── header ────────────────────────────────────────────────────────
+        # header
         hdr = QHBoxLayout()
         col = QVBoxLayout(); col.setSpacing(3)
         col.addWidget(lbl("Blacklist", "PageTitle"))
@@ -4566,7 +4492,7 @@ class BlacklistPage(QWidget):
         outer.addLayout(hdr)
         outer.addWidget(hdiv())
 
-        # ── scrollable list area ──────────────────────────────────────────
+        # scrollable list area
         add_card = QFrame(); add_card.setObjectName("SettCard")
         add_lay  = QVBoxLayout(add_card)
         add_lay.setContentsMargins(14, 12, 14, 12); add_lay.setSpacing(8)
@@ -4611,7 +4537,7 @@ class BlacklistPage(QWidget):
         self._list_lay.addStretch()
         self._rows: list[QFrame] = []
 
-        # ── delete-watch config section (below the list) ──────────────────
+        # delete-watch config section (below the list)
         outer.addWidget(hdiv())
         cfg_card = QFrame(); cfg_card.setObjectName("SettCard")
         cfg_lay  = QVBoxLayout(cfg_card)
@@ -4645,7 +4571,6 @@ class BlacklistPage(QWidget):
             "  user_id (@username) has been blacklisted for deleting their message.",
             "FieldHint"))
 
-        # Auto-save status indicator
         save_row = QHBoxLayout()
         self._bl_save_lbl = QLabel("")
         self._bl_save_lbl.setStyleSheet(f"color: {C['dim']}; font-size: 10px;")
@@ -4653,7 +4578,6 @@ class BlacklistPage(QWidget):
         cfg_lay.addLayout(save_row)
         outer.addWidget(cfg_card)
 
-        # Auto-save timer for delete-watch config
         self._bl_save_timer = QTimer(self)
         self._bl_save_timer.setSingleShot(True)
         self._bl_save_timer.setInterval(700)
@@ -4792,9 +4716,7 @@ class BlacklistPage(QWidget):
             self.refresh()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: SNIPE HISTORY
-# ─────────────────────────────────────────────────────────────────────────────
 
 class SnipeHistoryPage(QWidget):
     def __init__(self, parent=None):
@@ -4894,7 +4816,6 @@ class SnipeHistoryPage(QWidget):
         lay = QVBoxLayout(row)
         lay.setContentsMargins(14, 12, 14, 12); lay.setSpacing(6)
 
-        # ── top row: profile badge + timestamp + biome status ────────────
         top = QHBoxLayout(); top.setSpacing(8)
 
         profile_lbl = QLabel(entry.get("profile", "?"))
@@ -4912,7 +4833,6 @@ class SnipeHistoryPage(QWidget):
 
         top.addStretch()
 
-        # Biome verification badge
         bv = entry.get("biome_verified")
         if bv is True:
             bv_lbl = QLabel("✓ Biome OK")
@@ -4923,7 +4843,7 @@ class SnipeHistoryPage(QWidget):
             bv_lbl.setStyleSheet(f"color: {C['red2']}; font-size: 10px; font-weight: 600;")
             top.addWidget(bv_lbl)
 
-        # Timestamp
+        # timestamp
         ts_raw = entry.get("timestamp", "")
         try:
             dt   = datetime.datetime.fromisoformat(ts_raw)
@@ -4935,7 +4855,6 @@ class SnipeHistoryPage(QWidget):
         top.addWidget(ts_lbl)
         lay.addLayout(top)
 
-        # ── author ────────────────────────────────────────────────────────
         author_display = entry.get("author_display") or entry.get("author", "?")
         author_id      = entry.get("author_id", "")
         author_tag     = f"@{entry.get('author', author_display)}"
@@ -4944,7 +4863,6 @@ class SnipeHistoryPage(QWidget):
         author_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
         lay.addWidget(author_lbl)
 
-        # ── raw message preview ───────────────────────────────────────────
         raw = entry.get("raw_message", "")
         if raw:
             raw_lbl = QLabel(raw[:120] + ("…" if len(raw) > 120 else ""))
@@ -4953,7 +4871,6 @@ class SnipeHistoryPage(QWidget):
             raw_lbl.setWordWrap(True)
             lay.addWidget(raw_lbl)
 
-        # ── action buttons ────────────────────────────────────────────────
         btns = QHBoxLayout(); btns.setSpacing(6)
         roblox_url = entry.get("roblox_web_url", "")
         jump_url   = entry.get("jump_url", "")
@@ -4987,9 +4904,7 @@ class SnipeHistoryPage(QWidget):
             self.refresh()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: PLUGINS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class PluginsPage(QWidget):
     """
@@ -5137,8 +5052,6 @@ class MainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(2000)
-
-        # Auto-update
         self._updater = AutoUpdater(self)
         self._updater.update_available.connect(self._on_update_available)
         if not _UPDATE_TRIGGERED:
@@ -5205,7 +5118,7 @@ class MainWindow(QMainWindow):
         self._ppg = PluginsPage()
         self._phi = SnipeHistoryPage()
 
-        for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._ppg, self._phi):
+        for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._phi, self._ppg):
             self._stk.addWidget(pg)
 
         body.addWidget(self._stk); v.addLayout(body)
@@ -5230,8 +5143,6 @@ class MainWindow(QMainWindow):
         self._pd.set_hotkey_state(saved_hk)
         self._hotkey_cfg = saved_hk
         self._update_hotkeys(saved_hk)
-
-        # Wire blacklist and plugin pages (managers available only after engine init)
         self._sb.page_changed.connect(self._on_page_changed)
 
     def _shortcuts(self):
@@ -5259,7 +5170,6 @@ class MainWindow(QMainWindow):
 
     def _tray_notify(self, title: str, message: str, icon=None):
         if self._tray and self._tray.isVisible():
-            # Use custom icon if provided (QImage), otherwise default
             if icon:
                 self._tray.showMessage(title, message, QIcon(QPixmap.fromImage(icon)), 3000)
             else:
@@ -5342,12 +5252,12 @@ class MainWindow(QMainWindow):
 
         # Custom Notification
         self._tray_notify("Sniper Started", "Monitoring channels…", get_tray_icon_img())
-        # Webhook — engine no longer sends lifecycle events, this is the single sender
         self._send_webhook("start")
 
         if self._is_paused: self._toggle_pause_state()
 
-    def _stop(self):
+    def _stop(self, from_close: bool = False):
+        was_running = bool(self._br) 
         self._run       = False
         self._is_paused = False
         self._pd.on_stop()
@@ -5360,8 +5270,8 @@ class MainWindow(QMainWindow):
             self._br = None
             threading.Thread(target=br.stop, daemon=True, name="StopEngine").start()
 
-        self._tray_notify("Sniper Stopped", "Engine has been shut down.", get_tray_icon_img())
-        self._send_webhook("stop")
+        if was_running and not from_close:
+            self._send_webhook("stop")
 
     def _on_log(self, e: LogEntry):
         self._pl.append(e)
@@ -5369,7 +5279,6 @@ class MainWindow(QMainWindow):
             self._pd.append(e, self._dev)
 
     def _on_biome(self, expected: str, detected: str, matched: bool):
-        # Webhook is now fired by Bridge directly in the engine loop — no duplicate send here
         pass
 
     def _on_engine_paused(self, paused: bool):
@@ -5411,10 +5320,7 @@ class MainWindow(QMainWindow):
         title = f"Snipped — {profile_name}"
         msg   = f"Detected in server. ({n} total)"
         self._tray_notify(title, msg, get_tray_icon_img())
-
-        # Update history page in real time
         self._phi.add_entry(data)
-        # Webhook fired by Bridge in engine loop — no duplicate here
 
     def _on_delete_blacklist(self, uid: str, username: str):
         """Auto-blacklist fired by engine delete-watch."""
@@ -5449,9 +5355,7 @@ class MainWindow(QMainWindow):
                 self._pd.c_ping.set_value(f"{self._br.ping_ms:.0f}")
             uptime = int(self._br.uptime_seconds)
             self._pd.c_uptime.set_value(str(uptime))
-            # Push engine metrics to the grid cards
             self._pd.update_engine_metrics(self._br.engine.metrics)
-        # Roblox running indicator (uses psutil — run import guard)
         try:
             from sniper_engine import ProcessManager
             self._pd.update_roblox_status(ProcessManager.is_roblox_running())
@@ -5560,13 +5464,16 @@ class MainWindow(QMainWindow):
         super().mouseReleaseEvent(e)
 
     def resizeEvent(self, e):
-        super().resizeEvent(e); self._sb.adapt(self.width())
+        super().resizeEvent(e)
+        self._sb.adapt(self.width())
+        if hasattr(self, "_pd"):
+            self._pd._adapt_to_size()
         if hasattr(self, "_grip"):
             self._grip.move(self.width() - 14, self.height() - 14)
         self._tb._update_max_icon()
 
     def closeEvent(self, e):
-        self._stop(); self._cfg.save(); e.accept()
+        self._stop(from_close=True); self._cfg.save(); e.accept()
 
 # ENTRY POINT
 
@@ -5619,9 +5526,6 @@ def main():
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor(C["white"]))
     app.setPalette(pal)
 
-    # Splash screen → show main window only when splash finishes normally
-    # (not when it exits for an update — in that case os._exit(0) is called
-    #  before finished is ever emitted, so this callback never runs)
     splash = SplashScreen()
 
     def _on_splash_done():
