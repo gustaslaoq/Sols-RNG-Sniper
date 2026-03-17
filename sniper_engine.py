@@ -24,9 +24,6 @@ import psutil
 
 logger = logging.getLogger("sniper_engine")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ENUMS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class EngineStatus(Enum):
     IDLE       = "idle"
@@ -44,9 +41,6 @@ class LogLevel(Enum):
     DEBUG   = "DEBUG"
     SNIPE   = "SNIPE"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NETWORK / PATH CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
 
 DISCORD_GATEWAY_URL  = "wss://gateway.discord.gg/?v=10&encoding=json"
 DISCORD_API_BASE     = "https://discord.com/api/v10"
@@ -64,10 +58,6 @@ else:  # Linux (via Wine or native client)
     ROBLOX_LOG_PATH = Path.home() / ".local" / "share" / "roblox" / "logs"
 LOG_TAIL_BYTES       = 131072  # 128 KB
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PRE-COMPILED REGEX PATTERNS
-# ─────────────────────────────────────────────────────────────────────────────
 
 class _Patterns:
     ROBLOX_PRIVATE = re.compile(
@@ -90,24 +80,6 @@ class _Patterns:
         r"https?://(?:rb\.gy|bit\.ly|tinyurl\.com|t\.co|discord\.gg|discord\.com/invite|isgd\.it|cutt\.ly)/[\w/-]+",
         re.IGNORECASE)
 
-    # ── All known Sol's RNG biome names (largeImage hoverText values).
-    # These drive both the fallback word-boundary regex (BIOME_PATTERNS[-1])
-    # and the _BIOME_WORD_RE dict inside RobloxLogReader.
-    # Extend this tuple when the game adds new biomes.
-    _ALL_BIOME_NAMES = (
-        # Common
-        "NORMAL", "RAINY", "SNOWY", "WINDY", "SANDSTORM", "FOGGY",
-        # Rare / event
-        "GLITCHED", "DREAMSPACE", "CYBERSPACE", "HELL",
-        "NULL", "STARLIGHT", "HEAVEN", "CORRUPTED", "ABYSSAL",
-        "AURORA", "THUNDERSTORM", "OVERCAST", "BLOOD MOON",
-        # Additional confirmed / community-reported
-        "SOLAR ECLIPSE", "PUMPKIN MOON", "BLIZZARD", "ACID RAIN",
-        "HURRICANE", "TSUNAMI", "VOLCANIC", "METEOR SHOWER",
-        "RAINBOW", "HEATWAVE", "DUST STORM",
-    )
-
-    # Compiled once — ordered from most specific to fallback
     BIOME_PATTERNS = [
         re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
         re.compile(r'"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
@@ -119,20 +91,18 @@ class _Patterns:
         re.compile(r'hoverText:\s*([^\s,}\]]+)', re.IGNORECASE),
         re.compile(r'hoverText["\']?\s*[:=]\s*["\']([^"\']+)["\']', re.IGNORECASE),
         re.compile(
-            r"\b(" + "|".join(re.escape(b) for b in _ALL_BIOME_NAMES) + r")\b",
-            re.IGNORECASE,
-        ),
+            r'\b(NORMAL|GLITCHED|DREAMSPACE|CYBERSPACE|NULL|STARLIGHT|HEAVEN|CORRUPTED|ABYSSAL)\b',
+            re.IGNORECASE),
     ]
 
-    BIOME_DIRECT = frozenset(_ALL_BIOME_NAMES)
+    BIOME_DIRECT = frozenset([
+        "NORMAL", "GLITCHED", "DREAMSPACE", "CYBERSPACE",
+        "NULL", "STARLIGHT", "HEAVEN", "CORRUPTED", "ABYSSAL",
+    ])
 
 
 PATTERNS = _Patterns()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CROSS-PLATFORM SOUND
-# ─────────────────────────────────────────────────────────────────────────────
 
 def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> None:
     """Play a sound alert in a fire-and-forget manner.
@@ -143,7 +113,6 @@ def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> 
     """
     system = platform.system()
 
-    # ── custom file ──────────────────────────────────────────────────────────
     if filepath and Path(filepath).exists():
         try:
             if system == "Windows":
@@ -164,8 +133,6 @@ def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> 
         except Exception:
             pass
         return
-
-    # ── synthesised beep ─────────────────────────────────────────────────────
     try:
         if system == "Windows":
             import winsound
@@ -209,10 +176,6 @@ def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> 
     except Exception:
         pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DATA MODELS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_app_dir() -> Path:
     """Single canonical app directory — LOCALAPPDATA/SlaoqSniper on Windows."""
@@ -341,7 +304,6 @@ def _default_global_profile() -> SnipeProfile:
 def _default_profiles() -> list:
     profiles = [_default_global_profile()]
 
-    # ── Active biome profiles ─────────────────────────────────────────────
     for name, biome, triggers in [
         ("Glitched",   "GLITCHED",   ["glitch", "glitched"]),
         ("Dreamspace", "DREAMSPACE", ["dreamspace", "dream"]),
@@ -397,6 +359,8 @@ class SniperConfig:
     token:                   str           = ""
     monitored_channels:      list          = field(default_factory=list)
     profiles:                list          = field(default_factory=_default_profiles)
+    auto_play_enabled:       bool          = False
+    auto_play_fullscreen:    bool          = False
     auto_join_enabled:       bool          = True
     auto_join_delay_ms:      int           = 0
     pause_after_snipe_s:     int           = 0       # 0 = disabled
@@ -443,6 +407,8 @@ class SniperConfig:
             "token":                    self.token,
             "monitored_channels":       [asdict(c) for c in self.monitored_channels],
             "profiles":                 [p.to_dict() for p in self.profiles],
+            "auto_play_enabled":        self.auto_play_enabled,
+            "auto_play_fullscreen":     self.auto_play_fullscreen,
             "auto_join_enabled":        self.auto_join_enabled,
             "auto_join_delay_ms":       self.auto_join_delay_ms,
             "pause_after_snipe_s":      self.pause_after_snipe_s,
@@ -471,8 +437,7 @@ class SniperConfig:
             "delete_watch_seconds": self.delete_watch_seconds,
             "extra_tokens":         self.extra_tokens,
         }
-        # Atomic write: write to a tmp file then rename so a crash never
-        # corrupts the live config.json.
+
         config_path = Path(self.config_path)
         tmp_path    = config_path.with_suffix(".json.tmp")
         try:
@@ -480,7 +445,6 @@ class SniperConfig:
                 json.dump(data, fh, indent=2, ensure_ascii=False)
             shutil.move(str(tmp_path), str(config_path))
         except Exception:
-            # Clean up orphan tmp file on failure
             try:
                 tmp_path.unlink(missing_ok=True)
             except Exception:
@@ -512,20 +476,17 @@ class SniperConfig:
             cooldown_raw  = raw.pop("cooldown", {})
             raw.pop("CONFIG_PATH", None)  # legacy compat
 
-            # Bug 1 backward-compat: old key was close_roblox_after_join
             if "close_roblox_after_join" in raw and "close_roblox_before_join" not in raw:
                 raw["close_roblox_before_join"] = raw.pop("close_roblox_after_join")
             else:
                 raw.pop("close_roblox_after_join", None)
 
-            # Only pass fields that exist in the dataclass to avoid TypeError
             valid_fields = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
             cfg = cls(**valid_fields)
             cfg.monitored_channels  = channels
             cfg.profiles            = profiles
             cfg.webhook             = WebhookConfig.from_dict(webhook_raw)
             cfg.config_path         = path
-            # Load cooldown TTLs from the dedicated "cooldown" sub-dict
             if cooldown_raw:
                 cfg.cooldown_guild_ttl   = float(cooldown_raw.get("guild_ttl",   30.0))
                 cfg.cooldown_profile_ttl = float(cooldown_raw.get("profile_ttl",  0.0))
@@ -539,10 +500,6 @@ class SniperConfig:
             return cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LOG ENTRY
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class LogEntry:
     level:    LogLevel
@@ -551,9 +508,6 @@ class LogEntry:
     dev_only: bool = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PROCESS MANAGER
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ProcessManager:
     @staticmethod
@@ -641,258 +595,377 @@ class ProcessManager:
             logger.error("Failed to restart Roblox: %s", exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ROBLOX LOG READER  (session-aware biome detection)
-# ─────────────────────────────────────────────────────────────────────────────
+class AutoPlayManager:
+    POLL_INTERVAL = 0.35
+    MAX_WAIT      = 50.0
+    FOCUS_WAIT    = 2.5
+
+    def __init__(self, cfg: "SniperConfig", log_fn: Callable):
+        self._cfg    = cfg
+        self._log    = log_fn
+        self._active = False
+
+    def trigger(self):
+        if self._active:
+            return
+        threading.Thread(target=self._run, daemon=True, name="AutoPlay").start()
+
+    def _run(self):
+        self._active = True
+        try:
+            self._focus_roblox()
+            if getattr(self._cfg, "auto_play_fullscreen", False):
+                self._send_fullscreen()
+            found = self._wait_for_play_button()
+            if found:
+                self._log(LogLevel.INFO, f"[AUTO-PLAY] PLAY button found — clicking.")
+                self._click(found)
+            else:
+                self._log(LogLevel.WARN, "[AUTO-PLAY] PLAY button not found within timeout.")
+        except Exception as exc:
+            self._log(LogLevel.ERROR, f"[AUTO-PLAY] Unexpected error: {exc}")
+        finally:
+            self._active = False
+
+    def _focus_roblox(self):
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes, ctypes.wintypes as wt
+            user32       = ctypes.windll.user32
+            hwnd_found   = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+            def _cb(hwnd, _):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, buf, 256)
+                t = buf.value.lower()
+                if "roblox" in t and "studio" not in t:
+                    hwnd_found.append(hwnd)
+                return True
+
+            user32.EnumWindows(_cb, 0)
+            if hwnd_found:
+                hwnd = hwnd_found[0]
+                user32.ShowWindow(hwnd, 9)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.5)
+                self._log(LogLevel.INFO, "[AUTO-PLAY] Roblox focused.")
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] Focus failed: {exc}")
+
+    def _send_fullscreen(self):
+        try:
+            import keyboard
+            time.sleep(0.3)
+            keyboard.send("f11")
+            time.sleep(0.8)
+            self._log(LogLevel.INFO, "[AUTO-PLAY] Sent F11 for fullscreen.")
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] F11 failed: {exc}")
+
+    def _grab_screen(self):
+        try:
+            import mss
+            with mss.mss() as sct:
+                mon = sct.monitors[1]
+                img = sct.grab(mon)
+                return img
+        except ImportError:
+            self._log(LogLevel.WARN, "[AUTO-PLAY] mss not installed — run: pip install mss")
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] Screenshot failed: {exc}")
+        return None
+
+    def _detect_play(self):
+        img = self._grab_screen()
+        if img is None:
+            return None
+        try:
+            import pytesseract
+            from PIL import Image as PILImage
+            pil = PILImage.frombytes("RGB", img.size, img.rgb)
+            w, h = pil.size
+            crop_l = int(w * 0.25)
+            crop_r = int(w * 0.75)
+            crop_t = int(h * 0.50)
+            crop_b = int(h * 0.95)
+            region = pil.crop((crop_l, crop_t, crop_r, crop_b))
+            region = region.resize((region.width * 2, region.height * 2),
+                                   PILImage.LANCZOS)
+            data = pytesseract.image_to_data(
+                region,
+                output_type=pytesseract.Output.DICT,
+                config="--psm 11 --oem 3 -c tessedit_char_whitelist=PLAYplay",
+            )
+            for i, text in enumerate(data["text"]):
+                if text.strip().upper() == "PLAY":
+                    conf = int(data["conf"][i])
+                    if conf < 40:
+                        continue
+                    rx = data["left"][i] + data["width"][i] // 2
+                    ry = data["top"][i]  + data["height"][i] // 2
+                    scale = 0.5
+                    abs_x = crop_l + int(rx * scale)
+                    abs_y = crop_t + int(ry * scale)
+                    return (abs_x, abs_y)
+        except ImportError:
+            self._log(LogLevel.WARN,
+                "[AUTO-PLAY] pytesseract or Pillow not installed — "
+                "run: pip install pytesseract pillow  and install Tesseract from "
+                "https://github.com/UB-Mannheim/tesseract/wiki")
+        except Exception as exc:
+            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] OCR error: {exc}")
+        return None
+
+    def _wait_for_play_button(self):
+        self._log(LogLevel.INFO, "[AUTO-PLAY] Waiting for game to load…")
+        time.sleep(self.FOCUS_WAIT)
+        deadline = time.monotonic() + self.MAX_WAIT
+        attempt  = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            result = self._detect_play()
+            if result:
+                return result
+            time.sleep(self.POLL_INTERVAL)
+        return None
+
+    def _click(self, pos):
+        cx, cy = pos
+        try:
+            import pyautogui
+            pyautogui.moveTo(cx, cy, duration=0.1)
+            pyautogui.click()
+            self._log(LogLevel.INFO, f"[AUTO-PLAY] Clicked PLAY at ({cx}, {cy}).")
+        except ImportError:
+            self._log(LogLevel.WARN,
+                "[AUTO-PLAY] pyautogui not installed — run: pip install pyautogui")
+        except Exception as exc:
+            self._log(LogLevel.ERROR, f"[AUTO-PLAY] Click failed: {exc}")
+
+
 
 class RobloxLogReader:
-    """
-    Session-aware Roblox log reader — v5.0
 
-    Strategy (mirrors the reference biome macro exactly):
-    ──────────────────────────────────────────────────────
-    1. mark_launch() is called right before opening the Roblox URI.
-       It records the launch timestamp and clears all session state.
+    _BIOME_WORD_RE: dict = {
+        b: re.compile(rf"\b{b}\b", re.IGNORECASE)
+        for b in PATTERNS.BIOME_DIRECT
+    }
 
-    2. _find_session_log() picks the log file created MOST RECENTLY by ctime
-       (same as the reference: max(files, key=os.path.getctime)).
-       If the snipe happened recently we wait up to ~10s for Roblox to create
-       a new log file before falling back to the current newest.
-
-    3. wait_for_biome() opens the chosen log file, seeks to the END (file.seek(0,2))
-       — exactly like the reference macro — and then calls readline() in a loop.
-       This means only lines written AFTER we opened the file are ever seen,
-       which completely eliminates any possibility of reading pre-launch content.
-
-    4. _parse_biome_from_line() extracts largeImage.hoverText via JSON parse
-       (method 1) or brace-depth substring parser (method 2 — for truncated lines).
-       There is no biome whitelist; any non-ignored hoverText value is returned.
-    """
-
-    # hoverText values that are UI labels, not biome names — always ignored.
+    # Ignore these hoverText values — they are UI labels, not biome names.
     _HOVER_IGNORE = frozenset(["SOL'S RNG", "ROBLOX", ""])
 
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
-        # tail_bytes kept for API compat but not used in v5 seek-to-end approach
-        self.tail_bytes          = tail_bytes
-        self._launch_time: float = 0.0
+        self.tail_bytes           = tail_bytes
+        self._launch_time: float  = 0.0
         self._session_log: Optional[Path] = None
+        self._seek_pos: dict      = {}   # Path → int (last read position)
+        self._read_buf: dict      = {}   # Path → str (rolling text buffer)
+        self._last_known_biome: Optional[str] = None
 
-    # ── session control ───────────────────────────────────────────────────────
 
-    def mark_launch(self) -> None:
-        """Call immediately before opening the Roblox URI."""
+    def mark_launch(self):
         self._launch_time = time.time()
         self._session_log = None
+        self._seek_pos.clear()
+        self._read_buf.clear()
+        self._last_known_biome = None
 
-    def reset_session(self) -> None:
+    def reset_session(self):
         self._launch_time = 0.0
         self._session_log = None
+        self._seek_pos.clear()
+        self._read_buf.clear()
+        self._last_known_biome = None
 
-    # ── log file discovery ────────────────────────────────────────────────────
 
     def _find_session_log(self) -> Optional[Path]:
-        """
-        Return the most recently CREATED log file in the Roblox log directory,
-        excluding Studio logs — identical to the reference macro's strategy.
-
-        If mark_launch() was called recently we retry for up to 10 s to give
-        Roblox time to create the new session log file.
-        """
-        log_dir = ROBLOX_LOG_PATH
-
-        # Microsoft Store (UWP) fallback on Windows
-        if _PLATFORM == "Windows" and not log_dir.exists():
-            pkgs = Path(os.getenv("LOCALAPPDATA", "")) / "Packages"
-            for pkg in pkgs.glob("ROBLOXCORPORATION*"):
-                candidate = pkg / "LocalState" / "logs"
-                if candidate.exists():
-                    log_dir = candidate
-                    break
-
-        if not log_dir.exists():
+        if not ROBLOX_LOG_PATH.exists():
             return None
+        logs = list(ROBLOX_LOG_PATH.glob("*.log"))
+        if not logs:
+            return None
+        stat_map = []
+        for p in logs:
+            try:
+                s = p.stat()
+                stat_map.append((p, s.st_mtime, s.st_ctime))
+            except OSError:
+                continue
+        if not stat_map:
+            return None
+        window = self._launch_time - 30
+        recent = [(p, mt) for p, mt, ct in stat_map if mt >= window]
+        if recent:
+            recent.sort(key=lambda x: x[1], reverse=True)
+            return recent[0][0]
+        stat_map.sort(key=lambda x: x[1], reverse=True)
+        return stat_map[0][0]
 
-        def _latest() -> Optional[Path]:
-            files = [
-                p for p in log_dir.glob("*.log")
-                if "studio" not in p.name.lower()
-                and "installer" not in p.name.lower()
-            ]
-            if not files:
-                return None
-            # Use ctime — same as reference: max(files, key=os.path.getctime)
-            return max(files, key=lambda p: p.stat().st_ctime)
-
-        # If we launched recently, wait up to 10 s for a brand-new log file
-        if self._launch_time > 0:
-            deadline = self._launch_time + 10.0
-            while time.time() < deadline:
-                p = _latest()
-                if p and p.stat().st_ctime >= self._launch_time - 2:
-                    return p
-                time.sleep(0.5)
-
-        return _latest()
-
-    # ── line parser ───────────────────────────────────────────────────────────
 
     def _parse_biome_from_line(self, line: str) -> Optional[str]:
         """
-        Extract biome name from a single BloxstrapRPC log line.
+        Extract the biome name from a single log line.
 
-        Log format:
-          HH:MM:SS -- [BloxstrapRPC] {"command":"SetRichPresence","data":{
-            "smallImage":{"hoverText":"Sol's RNG",...},
-            "largeImage":{"hoverText":"HELL",...}}}
+        Real log format (confirmed from production):
+          23:32:52 -- [BloxstrapRPC] {"command":"SetRichPresence","data":{"state":"...",
+            "smallImage":{"hoverText":"Sol's RNG","assetId":...},
+            "largeImage":{"hoverText":"RAINY","assetId":...}}}
 
-        Only largeImage.hoverText is the biome.  smallImage is always "Sol's RNG".
+        IMPORTANT: only largeImage.hoverText carries the biome name.
+        smallImage.hoverText is always "Sol's RNG" and must not be returned.
 
-        Method 1: json.loads on the full JSON blob — fastest path.
-        Method 2: brace-depth substring parser for truncated lines where
-                  json.loads fails.
-        No biome whitelist — any non-ignored value is returned as-is.
+        Priority:
+          1. BloxstrapRPC full JSON parse → data.largeImage.hoverText only.
+          2. Bare regex on "largeImage"…"hoverText" fragment (truncated lines).
+          3. Word-boundary biome name fallback.
         """
-        if "BloxstrapRPC" not in line or "SetRichPresence" not in line:
-            return None
-
-        # ── Method 1: full JSON parse ─────────────────────────────────────────
-        json_start = line.find("{")
-        if json_start != -1:
+        if "BloxstrapRPC" in line and "SetRichPresence" in line:
             try:
-                blob  = json.loads(line[json_start:])
-                large = blob.get("data", {}).get("largeImage", {})
-                hover = large.get("hoverText", "").strip().upper()
-                if hover and hover not in self._HOVER_IGNORE:
-                    return hover
+                json_start = line.find("{")
+                if json_start != -1:
+                    raw = line[json_start:]
+                    blob = json.loads(raw)
+                    large = blob.get("data", {}).get("largeImage", {})
+                    hover = large.get("hoverText", "")
+                    if hover:
+                        candidate = hover.strip().upper()
+                        if candidate not in self._HOVER_IGNORE:
+                            return candidate
             except (json.JSONDecodeError, ValueError, AttributeError, KeyError):
                 pass
 
-        # ── Method 2: brace-depth substring on "largeImage":{...} ────────────
-        # Handles truncated lines (no closing braces at end of line).
-        if "largeImage" not in line or "hoverText" not in line:
-            return None
+        if "largeImage" in line and "hoverText" in line:
+            m = re.search(
+                r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"',
+                line, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip().upper()
+                if candidate not in self._HOVER_IGNORE:
+                    return candidate
 
-        idx = line.find('"largeImage"')
-        if idx == -1:
-            return None
-        brace_start = line.find('{', idx)
-        if brace_start == -1:
-            return None
-
-        # Walk forward to find the matching closing brace (or end-of-line)
-        depth = 0
-        end   = len(line)
-        for i in range(brace_start, len(line)):
-            if line[i] == '{':
-                depth += 1
-            elif line[i] == '}':
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        large_substr = line[brace_start:end]
-
-        # Try json.loads on the isolated object
-        try:
-            obj   = json.loads(large_substr)
-            hover = obj.get("hoverText", "").strip().upper()
-            if hover and hover not in self._HOVER_IGNORE:
-                return hover
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Plain regex fallback inside the extracted substring
-        m = re.search(r'"hoverText"\s*:\s*"([^"]+)"', large_substr, re.IGNORECASE)
-        if m:
-            candidate = m.group(1).strip().upper()
-            if candidate not in self._HOVER_IGNORE:
-                return candidate
+        if "BloxstrapRPC" not in line and "hoverText" not in line:
+            for biome, pat in self._BIOME_WORD_RE.items():
+                if pat.search(line):
+                    return biome
 
         return None
 
-    # ── public API ────────────────────────────────────────────────────────────
+
+    def _scan_buffer(self, text: str) -> Optional[str]:
+        """Scan a text buffer line-by-line and return the *last* biome found."""
+        last_biome: Optional[str] = None
+        for line in text.splitlines():
+            found = self._parse_biome_from_line(line)
+            if found:
+                last_biome = found
+        return last_biome
+
+
+    def _ingest_new_bytes(self, path: Path) -> bool:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+
+        last_pos = self._seek_pos.get(path, 0)
+
+        if last_pos == 0 and size > 0:
+            start = max(0, size - self.tail_bytes)
+        else:
+            start = last_pos
+
+        if start >= size:
+            return False
+
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                new_bytes = fh.read()
+        except (OSError, IOError):
+            return False
+
+        if not new_bytes:
+            return False
+
+        self._seek_pos[path] = size
+        new_text = new_bytes.decode("utf-8", errors="ignore")
+        prev_buf = self._read_buf.get(path, "")
+        combined = prev_buf + new_text
+        max_len  = self.tail_bytes * 2
+        if len(combined) > max_len:
+            combined = combined[-max_len:]
+        self._read_buf[path] = combined
+        return True
+
+
+    def _read_biome_from(self, path: Path) -> Optional[str]:
+        had_new = self._ingest_new_bytes(path)
+        if had_new:
+            buf   = self._read_buf.get(path, "")
+            found = self._scan_buffer(buf)
+            if found:
+                self._last_known_biome = found
+        return self._last_known_biome
+
 
     def get_current_biome(self) -> Optional[str]:
-        """
-        One-shot read: returns the most recent biome currently in the log,
-        or None.  Uses the same seek-to-end + readline loop internally.
-        Primarily useful for the biome watcher after initial verification.
-        """
         path = self._session_log or self._find_session_log()
         if not path:
-            return None
-        self._session_log = path
+            return self._last_known_biome
+
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                fh.seek(0, 2)           # go to end — skip historical content
-                # read whatever is already at end (nothing for a live file;
-                # may have content if the file was written before we opened it)
-                # Actually for get_current_biome we scan the WHOLE file tail
-                # to find the latest biome already written, but only looking
-                # backwards from the current end.
-                size  = fh.tell()
-                start = max(0, size - self.tail_bytes)
-                fh.seek(start)
-                text = fh.read()
-            last_biome = None
-            for line in text.splitlines():
-                found = self._parse_biome_from_line(line)
-                if found:
-                    last_biome = found
-            return last_biome
-        except (OSError, IOError):
-            return None
+            st        = path.stat()
+            idle_secs = time.time() - st.st_mtime
+            age_secs  = time.time() - st.st_ctime
+            if idle_secs > 120 and age_secs > 120:
+                newer = self._find_session_log()
+                if newer and newer != self._session_log:
+                    old = self._session_log
+                    if old:
+                        self._seek_pos.pop(old, None)
+                        self._read_buf.pop(old, None)
+                    # keep _last_known_biome until the new log overwrites it.
+                    self._session_log = newer
+                    self._seek_pos[newer] = 0
+                    self._read_buf[newer] = ""
+                    path = newer
+        except Exception:
+            pass
 
-    def wait_for_biome(self, timeout: float = 75.0, poll: float = 0.1) -> Optional[str]:
-        """
-        Wait until a biome appears in the Roblox log or timeout expires.
-
-        Mirrors the reference biome macro exactly:
-          1. Find the log file (waits up to 10 s for Roblox to create it).
-          2. Open the file and seek to the END — file.seek(0, 2).
-          3. Loop calling readline() until a biome line appears or timeout.
-
-        Seeking to the end means only lines written AFTER this call are ever
-        read — no pre-launch content, no session bleed, no stale biomes.
-        poll defaults to 0.1 s so the first biome line is picked up quickly.
-        """
-        path = self._find_session_log()
-        if path is None:
-            logger.warning("[LogReader] No log file found after waiting — giving up")
-            return None
         self._session_log = path
-        logger.info("[LogReader] Tailing log: %s", path.name)
+        return self._read_biome_from(path)
 
-        end_time = time.time() + timeout
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                fh.seek(0, 2)   # ← key: start at end, skip all historical lines
-                while time.time() < end_time:
-                    line = fh.readline()
-                    if line:
-                        biome = self._parse_biome_from_line(line)
-                        if biome:
-                            logger.info("[LogReader] Biome detected: %s", biome)
-                            return biome
-                    else:
-                        time.sleep(poll)
-        except (OSError, IOError) as exc:
-            logger.error("[LogReader] Error reading log file: %s", exc)
 
-        logger.warning("[LogReader] Timeout (%ss) — no biome detected", timeout)
+    def wait_for_biome(self, timeout: float = 75.0, poll: float = 1.0) -> Optional[str]:
+        path = self._session_log or self._find_session_log()
+        if path:
+            self._session_log = path
+            self._ingest_new_bytes(path)
+            buf   = self._read_buf.get(path, "")
+            found = self._scan_buffer(buf)
+            if found:
+                self._last_known_biome = found
+                return found
+
+        end = time.time() + timeout
+        while time.time() < end:
+            time.sleep(poll)
+            biome = self.get_current_biome()
+            if biome:
+                return biome
         return None
 
-# ─────────────────────────────────────────────────────────────────────────────
 # LINK RESOLVER
-# ─────────────────────────────────────────────────────────────────────────────
 
 class LinkResolver:
     _CACHE_MAX = 512   # LRU cache — 512 resolved URLs
 
     def __init__(self, session: aiohttp.ClientSession):
         self._session = session
-        # OrderedDict used as LRU: oldest entry at front
         self._cache: "OrderedDict[str, str]" = OrderedDict()
 
     def _cache_set(self, key: str, value: str):
@@ -954,11 +1027,6 @@ class LinkResolver:
 
         return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PROFILE FILTER
-# ─────────────────────────────────────────────────────────────────────────────
-
 _URL_STRIP_RE = re.compile(
     r'https?://\S+|roblox://\S+', re.IGNORECASE)
 
@@ -969,8 +1037,6 @@ def _strip_urls(text: str) -> str:
 class ProfileFilter:
     def __init__(self, config: SniperConfig):
         self._cfg = config
-
-    # ── shared internal logic ─────────────────────────────────────────────────
 
     def _sorted_non_global(self) -> list:
         return sorted(
@@ -1009,7 +1075,6 @@ class ProfileFilter:
 
         return None, "no profile trigger matched"
 
-    # ── public API ────────────────────────────────────────────────────────────
 
     def evaluate(self, text: str) -> Optional[SnipeProfile]:
         profile, _ = self._match_profile(_strip_urls(text))
@@ -1021,14 +1086,6 @@ class ProfileFilter:
     def rebuild(self):
         for p in self._cfg.profiles:
             p.compile()
-
-
-# (WebhookSender lives in main.py — engine fires callbacks instead)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DISCORD GATEWAY CLIENT
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DiscordGateway:
     def __init__(self, token: str, on_message: Callable, on_log: Callable,
@@ -1111,7 +1168,6 @@ class DiscordGateway:
             self._sequence = s
 
         if op == 10:
-            # Bug 5 fix: jitter before first heartbeat per Discord spec
             interval = d.get("heartbeat_interval", 41250) / 1000
             if self._heartbeat_task and not self._heartbeat_task.done():
                 self._heartbeat_task.cancel()
@@ -1121,7 +1177,6 @@ class DiscordGateway:
                     pass
             self._heartbeat_task = asyncio.create_task(
                 self._heartbeat_loop(interval))
-            # Bug 4 fix: attempt RESUME if we have a valid session_id + sequence
             if self._session_id and self._sequence is not None:
                 await self._resume()
             else:
@@ -1151,13 +1206,11 @@ class DiscordGateway:
                 asyncio.create_task(self._on_message_delete(d))
 
         elif op == 7:
-            # Reconnect requested — close so _gateway_loop reconnects
             self.on_log(LogEntry(LogLevel.WARN, "Reconnect requested by server."))
             if self._ws and not self._ws.closed:
                 await self._ws.close()
 
         elif op == 9:
-            # Invalid session — clear resume state then re-identify
             self.on_log(LogEntry(LogLevel.WARN, "Session invalidated. Reconnecting…"))
             self._session_id = None
             self._sequence   = None
@@ -1175,7 +1228,6 @@ class DiscordGateway:
         }})
 
     async def _resume(self):
-        """Bug 4 fix: send RESUME (op 6) to recover missed messages after disconnect."""
         await self._ws.send_json({"op": 6, "d": {
             "token":      self.token,
             "session_id": self._session_id,
@@ -1183,7 +1235,6 @@ class DiscordGateway:
         }})
 
     async def _heartbeat_loop(self, interval: float):
-        # Bug 5 fix: initial jitter — sleep random(0..1) * interval before first beat
         jitter = random.random() * interval
         try:
             await asyncio.sleep(jitter)
@@ -1218,7 +1269,6 @@ class DiscordGateway:
         full_content = f"{content} {' '.join(embed_parts)}".strip()
         astr         = author.get("username", "?")
         author_id    = author.get("id", "").strip()
-        # Build avatar URL if available
         avatar_hash  = author.get("avatar", "")
         if author_id and avatar_hash:
             author_avatar_url = (
@@ -1226,7 +1276,6 @@ class DiscordGateway:
             )
         else:
             author_avatar_url = ""
-        # Prefer display_name > global_name > username
         author_display = (
             author.get("display_name") or author.get("global_name") or astr
         )
@@ -1270,11 +1319,6 @@ class DiscordGateway:
         if self._session and not self._session.closed:
             await self._session.close()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SNIPER ENGINE  —  orchestrates all subsystems
-# ─────────────────────────────────────────────────────────────────────────────
-
 class SniperEngine:
 
     # TTL constants (seconds)
@@ -1305,7 +1349,7 @@ class SniperEngine:
         self._log_reader  = RobloxLogReader(config.log_tail_bytes)
         self._snipe_count = 0
 
-        # ── metrics ───────────────────────────────────────────────────────
+        # metrics
         self.metrics: dict = {
             "messages_scanned":  0,
             "links_detected":    0,
@@ -1313,22 +1357,20 @@ class SniperEngine:
             "webhooks_sent":     0,
         }
 
-        # ── message ID dedup buffer ───────────────────────────────────────
+        # message ID dedup buffer
         self._seen_msg_ids: deque = deque(maxlen=self._MSG_DEDUP_SIZE)
 
-        # ── server-URI dedup  {uri: expiry_monotonic} ─────────────────────
+        # server-URI dedup  {uri: expiry_monotonic}
         self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
 
-        # ── deleted message IDs observed from MESSAGE_DELETE ──────────────
+        # deleted message IDs observed from MESSAGE_DELETE
         # deque gives deterministic eviction order (FIFO) unlike set trimming
         self._deleted_msg_ids: deque = deque(maxlen=1000)
 
-        # ── injected subsystems ───────────────────────────────────────────
         self.blacklist = blacklist   # Optional BlacklistManager
         self.cooldown  = cooldown    # Optional CooldownManager
         self._plugins  = plugins     # Optional PluginLoader
 
-        # ── file logger ───────────────────────────────────────────────────
         self._file_logger: Optional[logging.Logger] = None
         if config.log_to_file:
             self._setup_file_logger()
@@ -1342,7 +1384,6 @@ class SniperEngine:
         self.on_paused:           Callable = lambda v: None
         self.on_delete_blacklist: Callable = lambda uid, name: None
 
-    # ── properties ────────────────────────────────────────────────────────────
 
     @property
     def snipe_count(self) -> int:
@@ -1402,7 +1443,6 @@ class SniperEngine:
             for k in expired:
                 del d[k]
 
-    # ── lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self):
         if self._running:
@@ -1412,14 +1452,12 @@ class SniperEngine:
         self._start_ts = time.monotonic()
         self._set_status(EngineStatus.CONNECTING)
 
-        # Persistent session with connection pooling (limit=50)
         connector     = aiohttp.TCPConnector(
             limit=50, ttl_dns_cache=300, use_dns_cache=True, keepalive_timeout=60)
         self._session = aiohttp.ClientSession(connector=connector, timeout=HTTP_REQUEST_TIMEOUT)
         self._resolver = LinkResolver(self._session)
         self._filter   = ProfileFilter(self.config)
 
-        # Initialise plugins — pass self as engine, ui is not available here
         if self._plugins:
             self._plugins.init_all(engine=self, ui=None)
 
@@ -1436,7 +1474,6 @@ class SniperEngine:
             asyncio.create_task(self._log_monitor_loop(), name="log_monitor"),
         ]
 
-        # Wait for the core tasks to finish (they run until stop() cancels them)
         try:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         except asyncio.CancelledError:
@@ -1449,15 +1486,12 @@ class SniperEngine:
         self._paused  = False
         self._log(LogLevel.INFO, "[ENGINE] Stopping sniper…")
 
-        # Notify plugins
         if self._plugins:
             self._plugins.broadcast("on_stop")
 
-        # Reset cooldown state on stop
         if self.cooldown:
             self.cooldown.reset()
 
-        # Snapshot the list before cancelling — done_callbacks may mutate it
         tasks_snapshot = list(self._tasks)
         for task in tasks_snapshot:
             task.cancel()
@@ -1487,9 +1521,7 @@ class SniperEngine:
             self._setup_file_logger()
         elif not config.log_to_file:
             self._file_logger = None
-        # Hot-reload cooldown TTLs — no import needed, just update the object
         if self.cooldown and hasattr(self.cooldown, "update_config"):
-            # Build a minimal duck-typed config object that matches CooldownConfig
             class _CD:
                 pass
             cd = _CD()
@@ -1497,8 +1529,6 @@ class SniperEngine:
             cd.profile_ttl = getattr(config, "cooldown_profile_ttl",  0.0)
             cd.link_ttl    = getattr(config, "cooldown_link_ttl",    10.0)
             self.cooldown.update_config(cd)
-
-    # ── background tasks ──────────────────────────────────────────────────────
 
     async def _run_gateway(self):
         if not self.config.token:
@@ -1515,7 +1545,6 @@ class SniperEngine:
             on_message_delete=self._on_discord_message_delete,
         )
 
-        # Extra tokens — each runs a secondary gateway in listen-only mode
         extra_tokens = getattr(self.config, "extra_tokens", [])
         for tok in extra_tokens:
             if tok and tok != self.config.token:
@@ -1549,7 +1578,6 @@ class SniperEngine:
                 except Exception:
                     pass
             self._purge_expired_caches()
-            # Periodically purge expired cooldown entries to keep memory bounded
             if self.cooldown:
                 self.cooldown.purge_expired()
 
@@ -1570,8 +1598,6 @@ class SniperEngine:
                 self._log(LogLevel.DEBUG, f"[BIOME] Current biome: {biome}", dev_only=True)
                 _last_logged_biome = biome
 
-    # ── message handler ───────────────────────────────────────────────────────
-
     async def _on_discord_message(self, guild_id: str, channel_id: str,
                                   msg_id: str, content: str, author: str, full: str,
                                   author_id: str = "", author_avatar_url: str = "",
@@ -1590,7 +1616,6 @@ class SniperEngine:
         if msg_id:
             self._seen_msg_ids.append(msg_id)
 
-        # ── Bug 1 fix: use the real author_id from gateway ────────────────────
         if self.blacklist and author_id and self.blacklist.is_blacklisted(author_id):
             entry = self.blacklist.get_entry(author_id)
             self._log(LogLevel.WARN,
@@ -1665,7 +1690,6 @@ class SniperEngine:
         self._snipe_count += 1
         self.metrics["snipes_successful"] += 1
 
-        # ── Detect which keyword triggered this snipe ─────────────────────────
         keyword_hit = ""
         if profile and profile._compiled_triggers:
             clean_text = _strip_urls(full)
@@ -1678,24 +1702,19 @@ class SniperEngine:
         self._log(LogLevel.SNIPE,
             f"[SNIPER] Profile '{profile.name}' — {author}: {content[:80]}")
 
-        # ── Build jump-to-message URL ─────────────────────────────────────────
         jump_url = ""
         if guild_id and channel_id and msg_id:
             jump_url = f"https://discord.com/channels/{guild_id}/{channel_id}/{msg_id}"
 
-        # ── Build the Roblox web URL (share link, not the raw uri scheme) ─────
         if place_id and place_id != "0" and code:
             roblox_web_url = (
                 f"https://www.roblox.com/games/{place_id}/"
                 f"?privateServerLinkCode={code}"
             )
         elif place_id == "0" and code:
-            # Share-link type: reconstruct the original roblox.com/share URL
             roblox_web_url = f"https://www.roblox.com/share?code={code}&type=Server"
         else:
             roblox_web_url = ""
-
-        # ── Optional auto-join — execute first for minimum latency ───────────
         if self.config.auto_join_enabled:
             if self.config.auto_join_delay_ms:
                 self._log(LogLevel.DEBUG,
@@ -1739,9 +1758,7 @@ class SniperEngine:
             self._log(LogLevel.DEBUG, "[JOIN] auto_join_enabled=False — skipping join",
                 dev_only=True)
 
-        # ── Biome verification — runs regardless of auto_join_enabled ────────
-        # mark_launch() was already called above if we joined; if auto-join is
-        # off the log reader still needs to watch the existing session.
+
         if profile.verify_biome_name and self.config.anti_bait_enabled:
             self._log(LogLevel.INFO,
                 f"[ANTI-BAIT] Starting biome verification for '{profile.verify_biome_name.upper()}'…")
@@ -1751,18 +1768,16 @@ class SniperEngine:
                 f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
                 f"anti_bait={self.config.anti_bait_enabled})", dev_only=True)
 
-        # ── Sound alert ───────────────────────────────────────────────────────
         if getattr(self.config, "sound_alert_enabled", False):
             self._log(LogLevel.DEBUG, "[ENGINE] Sound alert firing…", dev_only=True)
             freq       = getattr(self.config, "sound_alert_freq",   1000)
             dur        = getattr(self.config, "sound_alert_dur_ms",  200)
-            # Per-profile custom sound file takes precedence over global beep
+
             snd_path   = getattr(profile, "sound_alert_path", "") if profile else ""
             threading.Thread(
                 target=lambda: play_sound(freq, dur, snd_path),
                 daemon=True, name="SoundAlert").start()
 
-        # ── Build snipe data dict ─────────────────────────────────────────────
         snipe_data = {
             "place_id":          place_id,
             "code":              code,
@@ -1781,17 +1796,13 @@ class SniperEngine:
             "timestamp_iso":     datetime.now().isoformat(),
         }
 
-        # ── Fire on_snipe callback ────────────────────────────────────────────
         try:
             self.on_snipe(snipe_data)
         except Exception:
             pass
-
-        # ── Broadcast to plugins ──────────────────────────────────────────────
         if self._plugins:
             self._plugins.broadcast("on_snipe", snipe_data)
 
-        # ── Delete-watch: observe if author deletes within watch window ───────
         watch_s = getattr(self.config, "delete_watch_seconds", 0)
         if watch_s > 0 and author_id and msg_id:
             task = asyncio.create_task(
@@ -1800,7 +1811,6 @@ class SniperEngine:
             self._tasks.append(task)
             task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
 
-        # ── Bug 5 fix: Pause-after-snipe as tracked cancellable task ─────────
         pause_s = self.config.pause_after_snipe_s
         if pause_s > 0:
             task = asyncio.create_task(self._pause_after_snipe(pause_s))
@@ -1808,7 +1818,6 @@ class SniperEngine:
             task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
 
     async def _pause_after_snipe(self, pause_s: int):
-        """Bug 5 fix: auto-pause runs as a tracked task so stop() can cancel it."""
         self._paused = True
         try:
             self.on_paused(True)
@@ -1836,7 +1845,7 @@ class SniperEngine:
         while time.monotonic() < deadline and self._running:
             await asyncio.sleep(0.5)
             if msg_id in self._deleted_msg_ids:
-                # Remove the found entry from the deque
+                # remove the found entry from the deque
                 try:
                     self._deleted_msg_ids.remove(msg_id)
                 except ValueError:
@@ -1853,44 +1862,26 @@ class SniperEngine:
                 return
 
     async def _on_discord_message_delete(self, guild_id: str, channel_id: str, msg_id: str):
-        """Called by gateway when a MESSAGE_DELETE event fires in a monitored channel."""
-        # Bug 7 fix: deque(maxlen=1000) handles eviction automatically — no manual trim needed
         if msg_id:
             self._deleted_msg_ids.append(msg_id)
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
         if not profile.verify_biome_name:
             return
-        loop     = asyncio.get_running_loop()
+        loop  = asyncio.get_running_loop()
         expected = profile.verify_biome_name.upper()
         self._log(LogLevel.INFO,
             f"[ANTI-BAIT] Waiting for biome in log… (expected: {expected}, timeout: 75s)")
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(75.0))
 
-        # ── None → detection failure, never punish ───────────────────────────
-        # The game always has a biome, so None means the log reader found
-        # nothing — Roblox not yet loaded, BloxstrapRPC off, log unreadable, etc.
         if biome is None:
             self._log(LogLevel.WARN,
-                "[ANTI-BAIT] No biome detected in log within 75s — skipping verification "
-                "(detection failure, not treating as bait)")
+                "[ANTI-BAIT] Biome verification timed out — no biome detected in log within 75s")
             return
 
-        detected = biome.strip().upper()
-
-        # ── Known false-detection sentinel strings → ignore ───────────────────
-        # These are values that have historically slipped through the parser
-        # when no real biome was present: UI labels, empty strings, etc.
-        _IGNORE = frozenset(["", "UNKNOWN", "NONE", "SOL'S RNG", "ROBLOX", "IN MAIN MENU",
-                              "IN GAME", "PLAYING", "MENU", "N/A", "NULL"])
-        if detected in _IGNORE:
-            self._log(LogLevel.WARN,
-                f"[ANTI-BAIT] Detected value '{detected}' is a known false-detection — "
-                f"skipping verification")
-            return
-
-        matched = (detected == expected)
+        detected = biome.upper()
+        matched  = (detected == expected)
 
         self._log(LogLevel.INFO,
             f"[ANTI-BAIT] Log biome detected: '{detected}' (expected: '{expected}')")
