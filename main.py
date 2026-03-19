@@ -1819,8 +1819,48 @@ class MetricCard(QFrame):
         self._h_anim2.setDuration(130)
         self._h_anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
 
+        # counter animation state
+        self._counter_from:  float = 0.0
+        self._counter_to:    float = 0.0
+        self._counter_t:     float = 1.0   # 1.0 = settled
+        self._counter_timer  = QTimer(self)
+        self._counter_timer.setInterval(16)
+        self._counter_timer.timeout.connect(self._tick_counter)
+        self._raw_value: str = value   # last set string (non-numeric pass-through)
+
     def set_value(self, v: str):
+        self._raw_value = v
+        # Try numeric counter animation for integer/float strings
+        try:
+            new_num = float(v)
+            try:
+                cur_num = float(self._v.text().replace("—", "0"))
+            except ValueError:
+                cur_num = 0.0
+            if cur_num != new_num and v != "—":
+                self._counter_from = cur_num
+                self._counter_to   = new_num
+                self._counter_t    = 0.0
+                self._counter_timer.start()
+                return
+        except ValueError:
+            pass
+        self._counter_timer.stop()
         self._v.setText(v)
+
+    def _tick_counter(self):
+        self._counter_t = min(1.0, self._counter_t + 0.06)
+        # ease-out cubic
+        t = 1.0 - (1.0 - self._counter_t) ** 3
+        current = self._counter_from + (self._counter_to - self._counter_from) * t
+        # Format: int if target is int-like
+        if self._counter_to == int(self._counter_to):
+            self._v.setText(str(int(round(current))))
+        else:
+            self._v.setText(f"{current:.1f}")
+        if self._counter_t >= 1.0:
+            self._v.setText(self._raw_value)
+            self._counter_timer.stop()
 
     def set_card_height(self, h: int):
         self._h_anim.stop(); self._h_anim2.stop()
@@ -1868,11 +1908,23 @@ class NavButton(QPushButton):
         self.setObjectName("NavBtn")
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setProperty("active", False)
-        self._text   = text
-        self._ic     = _svg_icon(key)
-        self._ic_act = _svg_icon(key, "#ffffff")
-        self._wide   = False
-        self._active = False
+        self._text      = text
+        self._ic        = _svg_icon(key)
+        self._ic_act    = _svg_icon(key, "#ffffff")
+        self._wide      = False
+        self._active    = False
+        self._hovered   = False
+
+        # _active_t: 0.0 = fully inactive, 1.0 = fully active (animated)
+        self._active_t  = 0.0
+        # _hover_t:  0.0 = not hovered, 1.0 = hovered (only when inactive)
+        self._hover_t   = 0.0
+
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(8)
+        self._anim_timer.timeout.connect(self._tick_anim)
+
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._apply()
         self.set_style(font_size=11, icon_size=18)
 
@@ -1880,9 +1932,43 @@ class NavButton(QPushButton):
         self._active = v
         self.setProperty("active", v)
         self.style().unpolish(self); self.style().polish(self)
-        self.setIcon(self._ic_act if v else self._ic)
+        if v:
+            self._hover_t  = 0.0   # clear any hover state
+            self._hovered  = False
+        self._anim_timer.start()
+
+    def set_hovered(self, hovered: bool):
+        if self._active:
+            return
+        self._hovered = hovered
+        self._anim_timer.start()
+
+    def _tick_anim(self):
+        settled_a = False
+        settled_h = False
+
+        # Active fade
+        target_a = 1.0 if self._active else 0.0
+        diff_a   = target_a - self._active_t
+        if abs(diff_a) < 0.015:
+            self._active_t = target_a
+            settled_a = True
+        else:
+            self._active_t += diff_a * 0.18
+
+        # Hover fade — slower and smoother
+        target_h = (1.0 if self._hovered else 0.0) if not self._active else 0.0
+        diff_h   = target_h - self._hover_t
+        if abs(diff_h) < 0.015:
+            self._hover_t = target_h
+            settled_h = True
+        else:
+            self._hover_t += diff_h * 0.09   # gentle easing
+
+        if settled_a and settled_h:
+            self._anim_timer.stop()
+
         self._apply_sizes()
-        self.update()
 
     def show_text(self, wide: bool):
         if wide != self._wide:
@@ -1896,15 +1982,30 @@ class NavButton(QPushButton):
     def _apply_sizes(self):
         base_f = getattr(self, "_base_font", 11)
         base_i = getattr(self, "_base_icon", 18)
-        if self._active:
-            f = base_f + 1        # +1 px font
-            i = base_i + 2        # +2 px icon
-            self.setStyleSheet(f"font-size: {f}px; font-weight: 800;")
-        else:
-            self.setStyleSheet(f"font-size: {base_f}px; font-weight: 800;")
-            i = base_i
+        at = self._active_t
+        ht = self._hover_t
+
+        # inactive: #505050  →  hover: #e0e0e0  →  active: #ffffff
+        inactive_v = 0x50
+        hover_v    = 0xe0
+        active_v   = 0xff
+
+        base_v  = int(inactive_v + ht * (hover_v - inactive_v))
+        final_v = int(base_v + at * (active_v - base_v))
+        color   = f"#{final_v:02x}{final_v:02x}{final_v:02x}"
+
+        # Subtle size change: max +0.8px font on hover, +1.0px on active
+        f_size = base_f + at * 1.0 + ht * 0.8
+        i_size = base_i + int(at * 2) + int(ht * 1)
+        # Very gentle forward nudge: max 3px
+        ml     = int(ht * 3)
+
+        self.setStyleSheet(
+            f"font-size: {f_size:.1f}px; font-weight: 800; color: {color};"
+            f" padding-left: {ml}px;"
+        )
         self.setIcon(self._ic_act if self._active else self._ic)
-        self.setIconSize(QSize(i, i))
+        self.setIconSize(QSize(i_size, i_size))
 
     def _apply(self):
         if self._wide:
@@ -1913,7 +2014,6 @@ class NavButton(QPushButton):
         else:
             self.setText(""); self.setToolTip(self._text)
             self.setMinimumWidth(40); self.setMaximumWidth(40)
-
 
 
 
@@ -1943,42 +2043,73 @@ class KeySequenceEdit(QLineEdit):
 class _SplashBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._value = 0.0
-        self._total = 1
-        self.setFixedHeight(5)
+        self._value   = 0.0
+        self._total   = 1
+        self._shimmer = 0.0   # 0→1 running shimmer position
+        self.setFixedHeight(8)
         self.setStyleSheet("background: transparent;")
+
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.setInterval(16)
+        self._shimmer_timer.timeout.connect(self._tick_shimmer)
+
+    def _tick_shimmer(self):
+        self._shimmer = (self._shimmer + 0.012) % 1.0
+        self.update()
 
     def set_progress(self, value: float, total: int):
         self._value = value
         self._total = total
+        if value > 0 and not self._shimmer_timer.isActive():
+            self._shimmer_timer.start()
         self.update()
 
+    def stop_shimmer(self):
+        self._shimmer_timer.stop()
+
     def paintEvent(self, event):
+        import math
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = self.width()
-        h = self.height()
+        w  = self.width()
+        h  = self.height()
+        r  = h // 2   # fully rounded caps
         pct    = min(self._value, self._total) / max(1, self._total)
         filled = int(w * pct)
+
         p.setPen(Qt.PenStyle.NoPen)
+
         # track
-        p.setBrush(QColor("#141414"))
-        p.drawRoundedRect(0, 1, w, h - 2, 1, 1)
+        p.setBrush(QColor("#1a1a1a"))
+        p.drawRoundedRect(0, 0, w, h, r, r)
+
         if filled > 0:
-            # outer glow layers
-            for radius, alpha in [(10, 6), (6, 12), (3, 22)]:
-                p.setBrush(QColor(255, 255, 255, alpha))
-                p.drawRoundedRect(0, h // 2 - radius, filled, radius * 2, radius, radius)
-            # bar fill
+            # subtle glow behind bar
+            glow_c = QColor(255, 255, 255, 14)
+            p.setBrush(glow_c)
+            p.drawRoundedRect(0, -2, filled, h + 4, r + 2, r + 2)
+
+            # bar fill gradient
             grad = QLinearGradient(0, 0, filled, 0)
-            grad.setColorAt(0.0, QColor("#e8e8e8"))
+            grad.setColorAt(0.0, QColor("#c0c0c0"))
             grad.setColorAt(1.0, QColor("#ffffff"))
             p.setBrush(grad)
-            p.drawRoundedRect(0, 1, filled, h - 2, 1, 1)
-            # leading dot
-            dot_r = h - 1
-            p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(filled - dot_r // 2, (h - dot_r) // 2, dot_r, dot_r)
+            p.drawRoundedRect(0, 0, filled, h, r, r)
+
+            # shimmer: a bright travelling highlight
+            if filled > 20:
+                sw    = max(40, filled // 3)
+                sx    = int((self._shimmer * (filled + sw)) - sw)
+                sg    = QLinearGradient(sx, 0, sx + sw, 0)
+                sg.setColorAt(0.0,  QColor(255, 255, 255, 0))
+                sg.setColorAt(0.4,  QColor(255, 255, 255, 55))
+                sg.setColorAt(0.6,  QColor(255, 255, 255, 55))
+                sg.setColorAt(1.0,  QColor(255, 255, 255, 0))
+                p.setBrush(sg)
+                p.setClipRect(0, 0, filled, h)
+                p.drawRoundedRect(sx, 0, sw, h, r, r)
+                p.setClipping(False)
+
         p.end()
 
 
@@ -2032,6 +2163,7 @@ class SplashScreen(QWidget):
         self._opacity      = 0.0
         self._phase        = 0
         self._logo_t       = 0.0
+        self._logo_scale   = 0.65
         self._brand_t      = 0.0
         self._sub_t        = 0.0
         self._bottom_alpha = 0.0
@@ -2076,12 +2208,17 @@ class SplashScreen(QWidget):
         self._logo_lbl.setFixedSize(sz, sz)
         self._logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._logo_lbl.setStyleSheet("background:transparent;")
+        self._logo_px_orig = None
         if LOGO_PATH.exists():
             px = QPixmap(str(LOGO_PATH)).scaled(
                 sz, sz,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
+            self._logo_px_orig = px
             self._logo_lbl.setPixmap(px)
+        self._logo_eff = QGraphicsOpacityEffect(self._logo_lbl)
+        self._logo_eff.setOpacity(0.0)
+        self._logo_lbl.setGraphicsEffect(self._logo_eff)
         self._logo_lbl.move(self._logo_cx_start - sz // 2, ly)
 
         self._brand_lbl = QLabel("SLAOQ", self._root)
@@ -2115,12 +2252,9 @@ class SplashScreen(QWidget):
         self._sub_y_end   = ly + sz + 10   # closer to logo row
         self._sub_y_start = self._sub_y_end + self._SUB_RISE
 
-        self._sub_lbl = QLabel("SOL'S RNG SNIPER", self._root)
+        self._sub_lbl = _ShimmerLabel("SOL'S RNG SNIPER", self._root)
         self._sub_lbl.setFixedWidth(W)
         self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._sub_lbl.setStyleSheet(
-            "color:#555555;font-size:12px;font-weight:700;"
-            "letter-spacing:4px;background:transparent;")
         self._sub_lbl.move(0, self._sub_y_start)
 
         self._sub_eff = QGraphicsOpacityEffect(self._sub_lbl)
@@ -2135,7 +2269,7 @@ class SplashScreen(QWidget):
         self._bottom_container.setStyleSheet("background:transparent;")
 
         self._bar_w = _SplashBarWidget(self._bottom_container)
-        self._bar_w.setGeometry(pad, 8, bar_w, 5)
+        self._bar_w.setGeometry(pad, 6, bar_w, 8)
 
         self._task_lbl = QLabel(self._TASKS[0], self._bottom_container)
         self._task_lbl.setGeometry(pad, 20, bar_w, 16)
@@ -2170,21 +2304,44 @@ class SplashScreen(QWidget):
         import math
         return -(math.cos(math.pi * t) - 1.0) / 2.0
 
+    def _set_logo_scale(self, scale: float, cx: float):
+        """Resize logo label to simulate zoom, centered at cx, LOGO_Y."""
+        sz = self._LOGO_SZ
+        new_sz = max(4, int(sz * scale))
+        self._logo_lbl.setFixedSize(new_sz, new_sz)
+        if self._logo_px_orig:
+            scaled_px = self._logo_px_orig.scaled(
+                new_sz, new_sz,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self._logo_lbl.setPixmap(scaled_px)
+        self._logo_lbl.move(int(cx - new_sz / 2), self._LOGO_Y + (sz - new_sz) // 2)
+
     def _tick(self):
         if self._opacity < 1.0:
             self._opacity = min(1.0, self._opacity + self._FADE_IN_SPD)
             self.setWindowOpacity(self._opacity)
 
         if self._phase == 0:
-            # phase 0a: logo slides from centre to left
+            # Logo zooms in (0.65→1.0) AND slides from center to final pos
             self._logo_t = min(1.0, self._logo_t + self._SLIDE_SPD)
-            e  = self._ease_out_expo(self._logo_t)
+            e_slide = self._ease_out_expo(self._logo_t)
+            e_zoom  = self._ease_out_quint(self._logo_t)
             sz = self._LOGO_SZ
 
-            cx = self._logo_cx_start + (self._logo_cx_end - self._logo_cx_start) * e
-            self._logo_lbl.move(int(cx - sz // 2), self._LOGO_Y)
+            # slide cx
+            cx = self._logo_cx_start + (self._logo_cx_end - self._logo_cx_start) * e_slide
+            # zoom scale: 0.65 → 1.0
+            scale = 0.65 + e_zoom * 0.35
+            self._logo_scale = scale
 
-            # logo glow fades in during second half of slide
+            # fade in opacity during first 40%
+            fade_in = min(1.0, self._logo_t / 0.4)
+            self._logo_eff.setOpacity(fade_in)
+
+            self._set_logo_scale(scale, cx)
+
+            # logo glow fades in during second half
             if self._logo_t > 0.5:
                 glow_alpha = (self._logo_t - 0.5) / 0.5
                 self._glow.set_logo_only(True)
@@ -2194,20 +2351,21 @@ class SplashScreen(QWidget):
                 self._glow.update()
 
             if self._logo_t >= 1.0:
-                self._logo_lbl.move(self._logo_cx_end - sz // 2, self._LOGO_Y)
+                # snap to exact final size and position
+                self._set_logo_scale(1.0, self._logo_cx_end)
+                self._logo_eff.setOpacity(1.0)
                 self._glow.set_logo_only(True)
                 self._glow.set_alpha(1.0)
                 self._glow.update()
                 self._phase = 0.5
 
         elif self._phase == 0.5:
-            # phase 0b: brand slides in after logo has landed
+            # brand slides in
             self._brand_t = min(1.0, self._brand_t + self._BRAND_SPD)
             e = self._ease_out_quint(self._brand_t)
             slide_off = int(22 * (1.0 - e))
             self._brand_lbl.move(self._brand_x_end - slide_off, self._brand_y)
             self._brand_eff.setOpacity(e)
-
             self._glow.set_logo_only(False)
             self._glow.set_alpha(1.0)
             self._glow.update()
@@ -2218,16 +2376,20 @@ class SplashScreen(QWidget):
                 self._phase = 1
 
         elif self._phase == 1:
-            # subtitle rises up
+            # subtitle rises + shimmer activates when fully visible
             self._sub_t = min(1.0, self._sub_t + self._SUB_SPD)
             e = self._ease_out_quint(self._sub_t)
             y = int(self._sub_y_start + (self._sub_y_end - self._sub_y_start) * e)
             self._sub_lbl.move(0, y)
-            self._sub_eff.setOpacity(self._ease_in_out_sine(self._sub_t))
+            opacity = self._ease_in_out_sine(self._sub_t)
+            self._sub_eff.setOpacity(opacity)
 
             if self._sub_t >= 1.0:
                 self._sub_lbl.move(0, self._sub_y_end)
                 self._sub_eff.setOpacity(1.0)
+                # start shimmer on subtitle
+                if hasattr(self._sub_lbl, 'start_shimmer'):
+                    self._sub_lbl.start_shimmer()
                 self._phase = 2
                 self._step_timer.start()
 
@@ -2238,7 +2400,7 @@ class SplashScreen(QWidget):
 
             diff = self._bar_target - self._bar_value
             if abs(diff) > 0.001:
-                self._bar_value += diff * 0.07
+                self._bar_value += diff * 0.09
                 self._bar_w.set_progress(self._bar_value, len(self._TASKS))
 
 
@@ -2247,18 +2409,6 @@ class SplashScreen(QWidget):
         self.show()
         self._launch_update_check()
         self._master_timer.start()
-
-    def _step(self):
-        self._task_idx += 1
-        self._bar_target = float(self._task_idx)
-        if self._task_idx < len(self._TASKS):
-            self._task_lbl.setText(self._TASKS[self._task_idx])
-        if self._task_idx == 1:
-            self._step_timer.stop()
-            return
-        if self._task_idx >= len(self._TASKS):
-            self._step_timer.stop()
-            QTimer.singleShot(1000, self._begin_fade_out)
 
     def _launch_update_check(self):
         sig = self._update_result
@@ -2274,7 +2424,15 @@ class SplashScreen(QWidget):
             QTimer.singleShot(1500, lambda: self._do_update(sha))
         else:
             self._step_timer.start()
-            self._step()
+
+    def _step(self):
+        self._task_idx += 1
+        self._bar_target = float(self._task_idx)
+        if self._task_idx < len(self._TASKS):
+            self._task_lbl.setText(self._TASKS[self._task_idx])
+        if self._task_idx >= len(self._TASKS):
+            self._step_timer.stop()
+            QTimer.singleShot(800, self._begin_fade_out)
 
     def _do_update(self, sha: str):
         self._task_lbl.setText("Build pipeline launched — closing app...")
@@ -2286,7 +2444,7 @@ class SplashScreen(QWidget):
             self._bar_target = 0.0
             self._bar_value  = 0.0
             self._task_idx   = 1
-            QTimer.singleShot(700, lambda: (self._step_timer.start(), self._step()))
+            QTimer.singleShot(700, lambda: self._step_timer.start())
 
     def _quit_for_update(self):
         self._step_timer.stop()
@@ -2300,6 +2458,7 @@ class SplashScreen(QWidget):
 
     def _begin_fade_out(self):
         self._step_timer.stop()
+        self._bar_w.stop_shimmer()
         self._phase = 3
         self._fade_out_timer = QTimer(self)
         self._fade_out_timer.setInterval(16)
@@ -2315,6 +2474,88 @@ class SplashScreen(QWidget):
             self._step_timer.stop()
             self.close()
             self.finished.emit()
+
+
+class _ShimmerLabel(QLabel):
+    """Subtitle label with a metallic shimmer that travels only over the text glyphs."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setStyleSheet("background: transparent; color: #555555; "
+                           "font-size: 12px; font-weight: 700; letter-spacing: 4px;")
+        self._shimmer_pos = -0.3
+        self._shimmer_on  = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+
+    def start_shimmer(self):
+        self._shimmer_on  = True
+        self._shimmer_pos = -0.3
+        self._timer.start()
+
+    def _tick(self):
+        self._shimmer_pos += 0.007
+        if self._shimmer_pos > 1.3:
+            self._shimmer_pos = -0.3
+        self.update()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+
+        # ── 1. Draw text into an ARGB pixmap ─────────────────────────────
+        buf = QPixmap(w, h)
+        buf.fill(Qt.GlobalColor.transparent)
+        bp = QPainter(buf)
+        bp.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        bp.setFont(self.font())
+        bp.setPen(QColor("#555555"))
+        bp.drawText(0, 0, w, h,
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                    self.text())
+        bp.end()
+
+        # ── 2. If shimmer active, stamp the travelling highlight ──────────
+        if self._shimmer_on:
+            sw = max(50, int(w * 0.32))
+            sx = int(self._shimmer_pos * w) - sw // 2
+
+            # Build gradient band into another ARGB pixmap
+            shim = QPixmap(w, h)
+            shim.fill(Qt.GlobalColor.transparent)
+            sp = QPainter(shim)
+            g = QLinearGradient(sx, 0, sx + sw, 0)
+            g.setColorAt(0.0,  QColor(255, 255, 255, 0))
+            g.setColorAt(0.35, QColor(255, 255, 255, 160))
+            g.setColorAt(0.5,  QColor(255, 255, 255, 220))
+            g.setColorAt(0.65, QColor(255, 255, 255, 160))
+            g.setColorAt(1.0,  QColor(255, 255, 255, 0))
+            sp.fillRect(0, 0, w, h, g)
+            sp.end()
+
+            # Clip shimmer to text glyph pixels only (DestinationIn keeps
+            # only the intersection: shimmer alpha × text alpha)
+            mp = QPainter(shim)
+            mp.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_DestinationIn)
+            mp.drawPixmap(0, 0, buf)
+            mp.end()
+
+            # Stamp clipped shimmer onto the text buffer
+            fp = QPainter(buf)
+            fp.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOver)
+            fp.drawPixmap(0, 0, shim)
+            fp.end()
+
+        # ── 3. Blit final buffer to screen ────────────────────────────────
+        p = QPainter(self)
+        p.drawPixmap(0, 0, buf)
+        p.end()
 
 
 class _SplashGlowWidget(QWidget):
@@ -2633,28 +2874,45 @@ _PAGES = [
 class Sidebar(QFrame):
     page_changed = Signal(int)
 
+    # Bar animation phases
+    _BAR_IDLE      = 0   # bar fully visible at active pos
+    _BAR_SHRINK    = 1   # bar shrinking from both ends toward center
+    _BAR_GROW      = 2   # bar growing from center outward at new pos
+
     def __init__(self):
         super().__init__()
         self.setObjectName("Sidebar")
         self.setFixedWidth(SIDEBAR_LG)
         self.setMouseTracking(True)
 
-        self._anim_y:     float = -1.0   # hover background y
-        self._target_y:   float = -1.0
-        self._anim_h:     int   = 32
         self._active_idx: int   = 0
-        self._act_anim_y: float = -1.0   # white bar y
-        self._act_target_y: float = -1.0
-        self._act_anim_h: int   = 32
         self._collapsed:  bool  = False
 
-        self._ind_timer = QTimer(self)
-        self._ind_timer.setInterval(12)
-        self._ind_timer.timeout.connect(self._tick_indicator)
+        # ── Hover background — fade out old pos, fade in new pos ───────────
+        self._hover_y:       float = -1.0   # current drawn y
+        self._hover_next_y:  float = -1.0   # pending y after fade-out
+        self._hover_h:       int   = 32
+        self._hover_alpha:   float = 0.0
+        # phase: 0=idle, 1=fading-out (toward 0), 2=fading-in (toward 1)
+        self._hover_phase:   int   = 0
 
-        self._act_timer = QTimer(self)
-        self._act_timer.setInterval(12)
-        self._act_timer.timeout.connect(self._tick_act_indicator)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(8)
+        self._hover_timer.timeout.connect(self._tick_hover_bg)
+
+        # ── White bar (active indicator) with shrink/grow animation ────────
+        self._bar_phase:    int   = self._BAR_IDLE
+        self._bar_y:        float = -1.0   # current top-y of active btn
+        self._bar_target_y: float = -1.0   # next target after transition
+        self._bar_h:        int   = 32     # button height
+        # bar_scale: 1.0 = full, 0.0 = gone (shrunk to center)
+        self._bar_scale:    float = 1.0
+        self._bar_alpha:    float = 1.0    # opacity
+        self._bar_vel:      float = 0.0    # spring velocity for overshoot
+
+        self._bar_timer = QTimer(self)
+        self._bar_timer.setInterval(8)
+        self._bar_timer.timeout.connect(self._tick_bar)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 14, 8, 14) 
@@ -2714,6 +2972,8 @@ class Sidebar(QFrame):
         self._width_anim.finished.connect(self._on_anim_finished)
 
         self._btns[0].set_active(True)
+        self._btns[0]._active_t = 1.0
+        self._btns[0]._apply_sizes()
         self._active_idx = 0
 
     def set_plugins_visible(self, visible: bool):
@@ -2721,25 +2981,38 @@ class Sidebar(QFrame):
             self._btns[6].setVisible(visible)
 
     def _on_anim_finished(self):
-        self._move_indicator_to(self._active_idx)
-        self._move_act_indicator_to(self._active_idx)
+        self._snap_bar_to(self._active_idx)
+        self._snap_hover_to(self._active_idx)
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._snap_indicators(self._active_idx)
+        self._snap_bar_to(self._active_idx)
+        self._snap_hover_to(self._active_idx)
 
-    def _snap_indicators(self, idx: int):
+    def _btn_y(self, idx: int) -> float:
+        return float(self._btns[idx].mapTo(self, QPoint(0, 0)).y())
+
+    def _snap_bar_to(self, idx: int):
         if idx < 0 or idx >= len(self._btns):
             return
-        btn = self._btns[idx]
-        y   = float(btn.mapTo(self, QPoint(0, 0)).y())
-        h   = btn.height()
-        self._anim_y       = y
-        self._target_y     = y
-        self._act_anim_y   = y
-        self._act_target_y = y
-        self._anim_h       = h
-        self._act_anim_h   = h
+        self._bar_y        = self._btn_y(idx)
+        self._bar_target_y = self._bar_y
+        self._bar_h        = self._btns[idx].height()
+        self._bar_scale    = 1.0
+        self._bar_alpha    = 1.0
+        self._bar_phase    = self._BAR_IDLE
+        self.update()
+
+    def _snap_hover_to(self, idx: int):
+        if idx < 0 or idx >= len(self._btns):
+            return
+        y = self._btn_y(idx)
+        h = self._btns[idx].height()
+        self._hover_y     = y
+        self._hover_next_y = y
+        self._hover_h     = h
+        self._hover_alpha = 1.0
+        self._hover_phase = 0
         self.update()
 
     def _toggle_collapse(self):
@@ -2771,84 +3044,176 @@ class Sidebar(QFrame):
 
     def eventFilter(self, obj, event):
         if obj in self._btns:
+            idx = self._btns.index(obj)
             if event.type() == QEvent.Type.HoverEnter:
                 QApplication.restoreOverrideCursor()
                 QApplication.setOverrideCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                self._move_indicator_to(self._btns.index(obj))
+                # Animate hover brightness on non-active buttons
+                if idx != self._active_idx:
+                    self._btns[idx].set_hovered(True)
+                # Hover background stays at active — no position change
             elif event.type() == QEvent.Type.HoverLeave:
                 QApplication.restoreOverrideCursor()
-                self._move_indicator_to(self._active_idx)
+                if idx != self._active_idx:
+                    self._btns[idx].set_hovered(False)
         return False
 
-    def _move_indicator_to(self, idx: int):
-        if idx < 0 or idx >= len(self._btns): return
-        btn = self._btns[idx]
-        self._anim_h = btn.height()
-        # Pega a posição REAL do botão
-        self._target_y = float(btn.mapTo(self, QPoint(0, 0)).y())
-        if self._anim_y < 0:
-            self._anim_y = self._target_y
-        self._ind_timer.start()
+    # ── Hover background tick — fade out old, fade in new ─────────────────
+    def _tick_hover_bg(self):
+        SPEED = 0.13
 
-    def _tick_act_indicator(self):
-        diff = self._act_target_y - self._act_anim_y
-        if abs(diff) < 0.5:
-            self._act_anim_y = self._act_target_y
-            self._act_timer.stop()
-        else:
-            self._act_anim_y += diff * 0.22
+        if self._hover_phase == 1:   # fading OUT
+            self._hover_alpha -= SPEED
+            if self._hover_alpha <= 0.0:
+                self._hover_alpha = 0.0
+                # move to new position and start fading in
+                self._hover_y     = self._hover_next_y
+                self._hover_phase = 2
+
+        elif self._hover_phase == 2:   # fading IN
+            self._hover_alpha += SPEED
+            if self._hover_alpha >= 1.0:
+                self._hover_alpha = 1.0
+                self._hover_phase = 0
+                self._hover_timer.stop()
+
         self.update()
 
-    def _tick_indicator(self):
-        diff = self._target_y - self._anim_y
-        if abs(diff) < 0.5:
-            self._anim_y = self._target_y
-            self._ind_timer.stop()
-        else:
-            self._anim_y += diff * 0.22
+    # ── White bar tick — spring physics ───────────────────────────────────
+    def _tick_bar(self):
+        if self._bar_phase == self._BAR_SHRINK:
+            # Ease-in shrink toward 0
+            diff = self._bar_scale
+            step = max(0.008, diff * 0.10)
+            self._bar_scale -= step
+            self._bar_scale  = max(0.0, self._bar_scale)
+            self._bar_alpha  = max(0.0, self._bar_scale ** 0.7)
+            if self._bar_scale <= 0.01:
+                self._bar_scale   = 0.0
+                self._bar_alpha   = 0.0
+                self._bar_y       = self._bar_target_y
+                self._bar_phase   = self._BAR_GROW
+                # init spring velocity for overshoot
+                self._bar_vel     = 0.0
+
+        elif self._bar_phase == self._BAR_GROW:
+            # Spring: stiffness k, damping d — gives natural overshoot
+            k  = 0.18   # how strongly it pulls toward 1.0
+            d  = 0.62   # damping < 1.0 = underdamped (bouncy)
+            displacement   = self._bar_scale - 1.0
+            spring_force   = -k * displacement
+            damping_force  = -d * self._bar_vel
+            self._bar_vel += spring_force + damping_force
+            self._bar_scale += self._bar_vel
+            # alpha follows scale but clamped to visible range
+            self._bar_alpha = min(1.0, max(0.0, self._bar_scale ** 0.6))
+            # Settle check: close enough and low velocity
+            if abs(self._bar_scale - 1.0) < 0.005 and abs(self._bar_vel) < 0.003:
+                self._bar_scale = 1.0
+                self._bar_alpha = 1.0
+                self._bar_vel   = 0.0
+                self._bar_phase = self._BAR_IDLE
+                self._bar_timer.stop()
+
         self.update()
+
+    def _start_bar_transition(self, new_idx: int):
+        if new_idx < 0 or new_idx >= len(self._btns):
+            return
+        new_y = self._btn_y(new_idx)
+        self._bar_h        = self._btns[new_idx].height()
+        self._bar_target_y = new_y
+
+        if self._bar_y < 0:
+            # First paint — snap
+            self._bar_y    = new_y
+            self._bar_scale = 1.0
+            self._bar_alpha = 1.0
+            self._bar_phase = self._BAR_IDLE
+            self.update()
+            return
+
+        if self._bar_phase == self._BAR_IDLE:
+            self._bar_phase = self._BAR_SHRINK
+            self._bar_timer.start()
+        elif self._bar_phase == self._BAR_GROW:
+            # Mid-grow: restart shrink from current state
+            self._bar_phase = self._BAR_SHRINK
 
     def paintEvent(self, e):
         super().paintEvent(e)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if self._anim_y >= 0:
-            p.setBrush(QColor("#0e0e0e"))
+        # Hover background — fades out old position, fades in new position
+        if self._hover_y >= 0 and self._hover_alpha > 0.01:
+            c = QColor("#0e0e0e")
+            c.setAlphaF(self._hover_alpha)
+            p.setBrush(c)
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(4, int(self._anim_y), self.width() - 8, self._anim_h, 6, 6)
+            p.drawRoundedRect(4, int(self._hover_y),
+                              self.width() - 8, self._hover_h, 6, 6)
 
-        if self._act_anim_y >= 0:
-            btn_h = self._act_anim_h
-            by    = int(self._act_anim_y)
-            bar_h = max(16, int(btn_h * 0.55))
-            bar_y = by + (btn_h - bar_h) // 2
-            p.setBrush(QColor(C["white"]))
+        # White active bar (shrink/grow from center, rounded) + subtle glow
+        if self._bar_y >= 0 and self._bar_alpha > 0.01:
+            btn_h  = self._bar_h
+            by     = int(self._bar_y)
+            bar_h_full = max(16, int(btn_h * 0.55))
+            bar_y_center = by + (btn_h - bar_h_full) // 2
+            bar_radius = 2
+
+            draw_scale = min(1.4, max(0.0, self._bar_scale))
+            scaled_h = max(2, int(bar_h_full * draw_scale))
+            offset   = (bar_h_full - scaled_h) // 2
+            final_y  = bar_y_center + offset
+
+            a = self._bar_alpha
+
+            # single soft glow layer — wide, very faint
+            glow_c = QColor(255, 255, 255, int(28 * a))
+            p.setBrush(glow_c)
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(2, bar_y, 3, bar_h, 1, 1)
+            p.drawRoundedRect(-4, final_y - 3, 11, scaled_h + 6, 5, 5)
+
+            # bar itself
+            color = QColor(C["white"])
+            color.setAlphaF(a)
+            p.setBrush(color)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(2, final_y, 3, scaled_h, bar_radius, bar_radius)
 
         p.end()
 
-    def _move_act_indicator_to(self, idx: int):
-        """Animate the white click-bar to button idx."""
-        if idx < 0 or idx >= len(self._btns):
-            return
-        btn = self._btns[idx]
-        self._act_anim_h   = btn.height()
-        self._act_target_y = float(btn.mapTo(self, QPoint(0, 0)).y())
-        if self._act_anim_y < 0:
-            self._act_anim_y = self._act_target_y
-        self._act_timer.start()
-
     def _sel(self, idx: int):
+        old_idx = self._active_idx
+        # No animation if already on this page
+        if idx == old_idx:
+            return
+
         self._active_idx = idx
         for i, b in enumerate(self._btns):
             b.set_active(i == idx)
-        if self._act_anim_y < 0:
-            self._snap_indicators(idx)
-        else:
-            self._move_indicator_to(idx)
-            self._move_act_indicator_to(idx)
+            if i != idx:
+                b.set_hovered(False)
+
+        # Hover background: fade out from old pos, fade in at new pos
+        if idx < len(self._btns):
+            new_y = self._btn_y(idx)
+            self._hover_next_y = new_y
+            self._hover_h      = self._btns[idx].height()
+            if self._hover_y < 0:
+                # First selection — snap directly
+                self._hover_y     = new_y
+                self._hover_alpha = 1.0
+                self._hover_phase = 0
+            else:
+                # Trigger fade-out → move → fade-in
+                self._hover_phase = 1
+                self._hover_timer.start()
+            self.update()
+
+        # Trigger shrink→grow bar animation
+        self._start_bar_transition(idx)
         self.page_changed.emit(idx)
 
     def adapt(self, w: int):
@@ -3024,28 +3389,48 @@ class DashboardPage(QWidget):
         hk_lay.addLayout(ps_row)
         lay.addWidget(hk_card)
 
-        self._notif_frame = QFrame(); self._notif_frame.setObjectName("NotifFrame")
-        self._notif_frame.setFixedHeight(40); self._notif_frame.setVisible(False)
+        self._notif_frame = QFrame(self)
+        self._notif_frame.setObjectName("NotifFrame")
+        self._notif_frame.setFixedHeight(46)
+        self._notif_frame.setFixedWidth(360)
+        self._notif_frame.setVisible(False)
+        # position is set dynamically in show_notification / resizeEvent
 
         self._notif_timer = QTimer(self)
         self._notif_timer.setSingleShot(True); self._notif_timer.setInterval(4000)
-        self._notif_timer.timeout.connect(lambda: self._notif_frame.setVisible(False))
+        self._notif_timer.timeout.connect(self._hide_notification)
 
         notif_lay = QHBoxLayout(self._notif_frame)
-        notif_lay.setContentsMargins(15, 0, 15, 0)
+        notif_lay.setContentsMargins(14, 0, 10, 0); notif_lay.setSpacing(8)
+
+        self._notif_icon_lbl = QLabel("●")
+        self._notif_icon_lbl.setFixedWidth(10)
+        notif_lay.addWidget(self._notif_icon_lbl)
+
         self._notif_lbl = lbl("")
         self._notif_lbl.setWordWrap(True)
-        notif_lay.addWidget(self._notif_lbl); notif_lay.addStretch()
+        notif_lay.addWidget(self._notif_lbl, 1)
 
         close_btn = QPushButton("×")
-        close_btn.setFixedSize(20, 20)
+        close_btn.setFixedSize(22, 22)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(lambda: self._notif_frame.setVisible(False))
+        close_btn.clicked.connect(self._hide_notification)
         close_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {C['muted']}; border: none; font-size: 16px; }}"
             f"QPushButton:hover {{ color: {C['white']}; }}")
         notif_lay.addWidget(close_btn)
-        lay.addWidget(self._notif_frame)
+
+        # slide animation
+        self._notif_slide = QPropertyAnimation(self._notif_frame, b"pos")
+        self._notif_slide.setDuration(280)
+        self._notif_slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._notif_fade_eff = QGraphicsOpacityEffect(self._notif_frame)
+        self._notif_frame.setGraphicsEffect(self._notif_fade_eff)
+        self._notif_fade_eff.setOpacity(0.0)
+        self._notif_fade_anim = QPropertyAnimation(self._notif_fade_eff, b"opacity")
+        self._notif_fade_anim.setDuration(280)
+
         QTimer.singleShot(0, self._adapt_to_size)
 
         self._tg_key.keySequenceChanged.connect(self._emit_config)
@@ -3087,21 +3472,91 @@ class DashboardPage(QWidget):
         """Update the Roblox card — called from the tick timer."""
         self.c_roblox.set_value("RUNNING" if running else "CLOSED")
 
+    def _notif_pos_shown(self):
+        """Bottom-right corner of this widget, with margin."""
+        margin = 16
+        w = self._notif_frame.width()
+        h = self._notif_frame.height()
+        return QPoint(self.width() - w - margin, self.height() - h - margin)
+
+    def _notif_pos_hidden(self):
+        p = self._notif_pos_shown()
+        return QPoint(p.x() + 40, p.y())  # slide in from right
+
     def show_notification(self, text: str, level: str = "error"):
         self._notif_lbl.setText(text)
         if level == "error":
             color  = "#ff8a80"
+            icon_c = "#ff5252"
             bg     = C["notif_red_bg"]
             border = C["notif_red_border"]
         else:
             color  = "#ffd480"
+            icon_c = "#ffcc00"
             bg     = C["notif_yellow_bg"]
             border = C["notif_yellow_border"]
         self._notif_lbl.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+        self._notif_icon_lbl.setStyleSheet(f"color: {icon_c}; font-size: 7px;")
         self._notif_frame.setStyleSheet(
-            f"#NotifFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 8px; }}")
+            f"#NotifFrame {{ background-color: {bg}; border: 1px solid {border};"
+            f" border-radius: 10px; }}")
+
+        self._notif_slide.stop()
+        self._notif_fade_anim.stop()
+
+        # place off-screen to the right, then slide in
+        self._notif_frame.move(self._notif_pos_hidden())
         self._notif_frame.setVisible(True)
+        self._notif_frame.raise_()
+
+        self._notif_slide.setStartValue(self._notif_pos_hidden())
+        self._notif_slide.setEndValue(self._notif_pos_shown())
+        self._notif_slide.start()
+
+        self._notif_fade_anim.setStartValue(0.0)
+        self._notif_fade_anim.setEndValue(1.0)
+        self._notif_fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._notif_fade_anim.start()
+
         self._notif_timer.start()
+
+    def _hide_notification(self):
+        self._notif_timer.stop()
+        self._notif_slide.stop()
+        self._notif_fade_anim.stop()
+
+        self._notif_slide.setStartValue(self._notif_frame.pos())
+        self._notif_slide.setEndValue(self._notif_pos_hidden())
+        self._notif_slide.start()
+
+        self._notif_fade_anim.setStartValue(1.0)
+        self._notif_fade_anim.setEndValue(0.0)
+        self._notif_fade_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._notif_fade_anim.finished.connect(lambda: self._notif_frame.setVisible(False))
+        self._notif_fade_anim.start()
+
+    def set_ping(self, ms: float):
+        """Update ping card with color-coded value (green/yellow/red)."""
+        text = f"{ms:.0f}"
+        if ms <= 80:
+            color = "#00cc66"   # green — good
+        elif ms <= 200:
+            color = "#ffcc00"   # yellow — ok
+        else:
+            color = "#ff5252"   # red — bad
+        self.c_ping._v.setStyleSheet(f"color: {color}; font-weight: 800;")
+        self.c_ping._raw_value = text
+        try:
+            cur = float(self.c_ping._v.text().replace("—", "0"))
+            if cur != ms:
+                self.c_ping._counter_from = cur
+                self.c_ping._counter_to   = ms
+                self.c_ping._counter_t    = 0.0
+                self.c_ping._counter_timer.start()
+                return
+        except ValueError:
+            pass
+        self.c_ping._v.setText(text)
 
     def _emit_config(self):
         self.hotkey_config_changed.emit({
@@ -3124,6 +3579,7 @@ class DashboardPage(QWidget):
         self._p.setText("  Pause Sniper")
         self._p.setIcon(_svg_icon("pause", "#ffcc00", 16))
         self.c_ping.set_value("—")
+        self.c_ping._v.setStyleSheet("")
         self.c_uptime.set_value("—")
 
     def on_pause(self):
@@ -5125,7 +5581,7 @@ class MainWindow(QMainWindow):
         self._grip = QSizeGrip(self); self._grip.setFixedSize(14, 14)
 
     def _connect(self):
-        self._sb.page_changed.connect(self._stk.setCurrentIndex)
+        self._sb.page_changed.connect(self._switch_page)
         self._pd.start_requested.connect(self._start)
         self._pd.stop_requested.connect(self._stop)
         self._pd.pause_requested.connect(self._toggle_manual_pause)
@@ -5143,7 +5599,6 @@ class MainWindow(QMainWindow):
         self._pd.set_hotkey_state(saved_hk)
         self._hotkey_cfg = saved_hk
         self._update_hotkeys(saved_hk)
-        self._sb.page_changed.connect(self._on_page_changed)
 
     def _shortcuts(self):
         sc = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
@@ -5153,9 +5608,48 @@ class MainWindow(QMainWindow):
         if idx == 3:
             self._pbl.refresh()
         elif idx == 5:
-            self._ppg.refresh()
-        elif idx == 6:
             self._phi.refresh()
+        elif idx == 6:
+            self._ppg.refresh()
+
+    def _switch_page(self, idx: int):
+        """Fade-out current page, switch, fade-in new page — no position changes."""
+        if self._stk.currentIndex() == idx:
+            return
+
+        current  = self._stk.currentWidget()
+        DURATION = 140
+
+        out_eff = QGraphicsOpacityEffect(current)
+        current.setGraphicsEffect(out_eff)
+
+        anim_out = QPropertyAnimation(out_eff, b"opacity", current)
+        anim_out.setDuration(DURATION)
+        anim_out.setStartValue(1.0)
+        anim_out.setEndValue(0.0)
+        anim_out.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+        def _do_switch():
+            current.setGraphicsEffect(None)
+            self._stk.setCurrentIndex(idx)
+            self._on_page_changed(idx)
+
+            new_page = self._stk.currentWidget()
+            in_eff   = QGraphicsOpacityEffect(new_page)
+            new_page.setGraphicsEffect(in_eff)
+            in_eff.setOpacity(0.0)
+
+            anim_in = QPropertyAnimation(in_eff, b"opacity", new_page)
+            anim_in.setDuration(DURATION)
+            anim_in.setStartValue(0.0)
+            anim_in.setEndValue(1.0)
+            anim_in.setEasingCurve(QEasingCurve.Type.OutQuad)
+            anim_in.finished.connect(lambda: new_page.setGraphicsEffect(None))
+            anim_in.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
+        anim_out.finished.connect(_do_switch)
+        anim_out.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
 
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -5330,7 +5824,7 @@ class MainWindow(QMainWindow):
         self._pl.append(e); self._pd.append(e, self._dev)
 
     def _on_ping(self, p: float):
-        self._pd.c_ping.set_value(f"{p:.0f}")
+        self._pd.set_ping(p)
 
     def _on_cfg(self, cfg: SniperConfig):
         self._cfg = cfg
@@ -5352,7 +5846,7 @@ class MainWindow(QMainWindow):
     def _tick(self):
         if self._br:
             if self._br.ping_ms > 0:
-                self._pd.c_ping.set_value(f"{self._br.ping_ms:.0f}")
+                self._pd.set_ping(self._br.ping_ms)
             uptime = int(self._br.uptime_seconds)
             self._pd.c_uptime.set_value(str(uptime))
             self._pd.update_engine_metrics(self._br.engine.metrics)
