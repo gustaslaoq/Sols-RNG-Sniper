@@ -1,5 +1,5 @@
 from __future__ import annotations
-#
+
 import sys
 import subprocess
 import os
@@ -904,6 +904,7 @@ QToolTip {{
     font-weight: 800; min-height: 32px; max-height: 32px;
 }}
 #NavBtn:hover            {{ color: {C['text']}; background-color: transparent; }}
+#NavBtn:pressed        {{ color: {C['white']}; background-color: transparent; }}
 #NavBtn[active="true"]   {{ background-color: transparent; color: {C['white']}; }}
 #ContentArea {{ background-color: {C['surface']}; }}
 #MetricCard {{
@@ -1924,7 +1925,6 @@ class NavButton(QPushButton):
         self._anim_timer.setInterval(8)
         self._anim_timer.timeout.connect(self._tick_anim)
 
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._apply()
         self.set_style(font_size=11, icon_size=18)
 
@@ -1932,15 +1932,17 @@ class NavButton(QPushButton):
         self._active = v
         self.setProperty("active", v)
         self.style().unpolish(self); self.style().polish(self)
-        if v:
-            self._hover_t  = 0.0   # clear any hover state
-            self._hovered  = False
-        self._anim_timer.start()
+        if not v:
+            # Reset hover when becoming inactive
+            self._hovered = False
+            self._hover_t = 0.0
+            self.update()
+            self._anim_timer.start()
 
     def set_hovered(self, hovered: bool):
-        if self._active:
-            return
+        # Hover works independently of active state
         self._hovered = hovered
+        self.update()
         self._anim_timer.start()
 
     def _tick_anim(self):
@@ -1956,8 +1958,8 @@ class NavButton(QPushButton):
         else:
             self._active_t += diff_a * 0.18
 
-        # Hover fade — slower and smoother
-        target_h = (1.0 if self._hovered else 0.0) if not self._active else 0.0
+        # Hover fade — works independently of active state
+        target_h = 1.0 if self._hovered else 0.0
         diff_h   = target_h - self._hover_t
         if abs(diff_h) < 0.015:
             self._hover_t = target_h
@@ -1994,15 +1996,14 @@ class NavButton(QPushButton):
         final_v = int(base_v + at * (active_v - base_v))
         color   = f"#{final_v:02x}{final_v:02x}{final_v:02x}"
 
-        # Subtle size change: max +0.8px font on hover, +1.0px on active
-        f_size = base_f + at * 1.0 + ht * 0.8
+        # Move forward on hover: translate +2px right
+        nudge = int(ht * 2)
+        # Size change: subtle on hover, more on active
+        f_size = base_f + at * 1.0 + ht * 0.5
         i_size = base_i + int(at * 2) + int(ht * 1)
-        # Very gentle forward nudge: max 3px
-        ml     = int(ht * 3)
 
         self.setStyleSheet(
-            f"font-size: {f_size:.1f}px; font-weight: 800; color: {color};"
-            f" padding-left: {ml}px;"
+            f"font-size: {f_size:.1f}px; font-weight: 800; color: {color}; margin-left: {nudge}px;"
         )
         self.setIcon(self._ic_act if self._active else self._ic)
         self.setIconSize(QSize(i_size, i_size))
@@ -2271,9 +2272,16 @@ class SplashScreen(QWidget):
         self._bar_w = _SplashBarWidget(self._bottom_container)
         self._bar_w.setGeometry(pad, 6, bar_w, 8)
 
+        # Progress percentage label
+        self._pct_lbl = QLabel("0%", self._bottom_container)
+        self._pct_lbl.setGeometry(pad + bar_w - 36, 20, 36, 16)
+        self._pct_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._pct_lbl.setStyleSheet(
+            "color:#383838;font-size:10px;letter-spacing:0.3px;background:transparent;")
+
         self._task_lbl = QLabel(self._TASKS[0], self._bottom_container)
-        self._task_lbl.setGeometry(pad, 20, bar_w, 16)
-        self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._task_lbl.setGeometry(pad, 20, bar_w - 44, 16)
+        self._task_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._task_lbl.setStyleSheet(
             "color:#383838;font-size:10px;letter-spacing:0.3px;background:transparent;")
 
@@ -2402,6 +2410,8 @@ class SplashScreen(QWidget):
             if abs(diff) > 0.001:
                 self._bar_value += diff * 0.09
                 self._bar_w.set_progress(self._bar_value, len(self._TASKS))
+                pct = min(100, int((self._bar_value / len(self._TASKS)) * 100))
+                self._pct_lbl.setText(f"{pct}%")
 
 
     def start(self):
@@ -3048,19 +3058,17 @@ class Sidebar(QFrame):
             if event.type() == QEvent.Type.HoverEnter:
                 QApplication.restoreOverrideCursor()
                 QApplication.setOverrideCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                # Animate hover brightness on non-active buttons
-                if idx != self._active_idx:
-                    self._btns[idx].set_hovered(True)
-                # Hover background stays at active — no position change
+                # Trigger button hover animation (lighter color + forward move)
+                self._btns[idx].set_hovered(True)
+                # Background stays at active button — does not follow mouse
             elif event.type() == QEvent.Type.HoverLeave:
                 QApplication.restoreOverrideCursor()
-                if idx != self._active_idx:
-                    self._btns[idx].set_hovered(False)
+                self._btns[idx].set_hovered(False)
         return False
 
     # ── Hover background tick — fade out old, fade in new ─────────────────
     def _tick_hover_bg(self):
-        SPEED = 0.13
+        SPEED = 0.12   # moderate speed for responsive feel
 
         if self._hover_phase == 1:   # fading OUT
             self._hover_alpha -= SPEED
@@ -3193,8 +3201,7 @@ class Sidebar(QFrame):
         self._active_idx = idx
         for i, b in enumerate(self._btns):
             b.set_active(i == idx)
-            if i != idx:
-                b.set_hovered(False)
+            # Don't reset hover — it handles itself via eventFilter
 
         # Hover background: fade out from old pos, fade in at new pos
         if idx < len(self._btns):
@@ -5562,6 +5569,49 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         v = QVBoxLayout(root); v.setContentsMargins(1, 1, 1, 1); v.setSpacing(0)
         self._tb = TitleBar(self); v.addWidget(self._tb)
+
+        # Update banner (hidden by default)
+        self._update_banner = QWidget(root)
+        self._update_banner.setFixedHeight(36)
+        self._update_banner.setStyleSheet(
+            "background-color:#ffcc00;color:#000000;")
+        self._update_banner.setVisible(False)
+
+        banner_lay = QHBoxLayout(self._update_banner)
+        banner_lay.setContentsMargins(12, 0, 12, 0)
+
+        self._update_lbl = QLabel("Update available — click to install")
+        self._update_lbl.setStyleSheet("font-size:11px;font-weight:600;")
+        banner_lay.addWidget(self._update_lbl)
+
+        banner_lay.addStretch()
+
+        self._auto_update_chk = QCheckBox("Auto update")
+        self._auto_update_chk.setStyleSheet(
+            "color:#000000;font-size:10px;")
+        self._auto_update_chk.stateChanged.connect(self._on_auto_update_changed)
+        banner_lay.addWidget(self._auto_update_chk)
+
+        self._update_now_btn = QPushButton("Now")
+        self._update_now_btn.setFixedSize(60, 24)
+        self._update_now_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._update_now_btn.setStyleSheet(
+            "background-color:#000000;color:#ffcc00;border:none;border-radius:4px;"
+            "font-size:10px;font-weight:700;")
+        self._update_now_btn.clicked.connect(lambda: _launch_bat_update())
+        banner_lay.addWidget(self._update_now_btn)
+
+        self._update_later_btn = QPushButton("Later")
+        self._update_later_btn.setFixedSize(50, 24)
+        self._update_later_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._update_later_btn.setStyleSheet(
+            "background-color:transparent;color:#000000;border:1px solid #000000;border-radius:4px;"
+            "font-size:10px;")
+        self._update_later_btn.clicked.connect(self._update_banner.hide)
+        banner_lay.addWidget(self._update_later_btn)
+
+        v.addWidget(self._update_banner)
+
         body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
         self._sb = Sidebar(); body.addWidget(self._sb)
         self._stk = QStackedWidget(); self._stk.setObjectName("ContentArea")
@@ -5831,8 +5881,16 @@ class MainWindow(QMainWindow):
         if self._br: self._br.reload(cfg)
 
     def _on_update_available(self, sha: str):
-        self._pd.show_notification(
-            f"New version detected ({sha}) — rebuilding automatically…", "warning")
+        # Show yellow banner instead of notification
+        self._update_lbl.setText(f"Update available ({sha})")
+        self._auto_update = self._cfg.auto_update_enabled if hasattr(self._cfg, 'auto_update_enabled') else False
+        self._auto_update_chk.setChecked(self._auto_update)
+        self._update_banner.setVisible(True)
+
+    def _on_auto_update_changed(self, state):
+        self._auto_update = bool(state)
+        self._cfg.auto_update_enabled = self._auto_update
+        self._cfg.save()
         e = LogEntry(LogLevel.WARN, f"[UPDATE] New commit ({sha}) — launching build pipeline…")
         self._pl.append(e); self._pd.append(e, self._dev)
         self._stop()
