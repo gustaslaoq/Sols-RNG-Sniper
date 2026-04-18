@@ -155,6 +155,16 @@ echo  OK  Replaced old exe
 :copy_done
 for %%i in ("%TARGET_EXE%") do set "DEST_DIR=%%~dpi"
 
+:: Create desktop shortcut
+echo Creating shortcuts...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%PUBLIC%\Desktop\%EXE_NAME%.lnk'); $s.TargetPath = '%TARGET_EXE%'; $s.WorkingDirectory = '%DEST_DIR%'; $s.Description = 'Slaoqs Sniper'; $s.Save()" 2>nul
+echo  OK  Desktop shortcut
+
+:: Add to startup (runs minimized)
+set STARTUP_FILE=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\%EXE_NAME%.lnk
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP_FILE%'); $s.TargetPath = '%TARGET_EXE%'; $s.WorkingDirectory = '%DEST_DIR%'; $s.Arguments = '--minimized'; $s.Save()"
+echo  OK  Startup shortcut
+
 echo  Finalizing...
 ie4uinit.exe -ClearIconCache >nul 2>&1
 ie4uinit.exe -show >nul 2>&1
