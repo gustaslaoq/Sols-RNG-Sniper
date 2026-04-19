@@ -1378,13 +1378,16 @@ class Bridge(QObject):
     sig_paused           = Signal(bool)
     sig_delete_blacklist = Signal(str, str)   # uid, username
 
-    def __init__(self, cfg: SniperConfig):
+    def __init__(self, cfg: SniperConfig, history: Optional[SnipeHistoryManager] = None):
         super().__init__()
 
         app_dir = _get_app_dir()
 
         bl   = BlacklistManager(app_dir / "blacklist.json")
-        hist = SnipeHistoryManager(app_dir / "snipe_history.json")
+        if history is not None:
+            hist = history
+        else:
+            hist = SnipeHistoryManager(app_dir / "snipe_history.json")
 
         cd_cfg = CooldownConfig(
             guild_ttl   = getattr(cfg, "cooldown_guild_ttl",   30.0),
@@ -1597,6 +1600,16 @@ class PropagatingListWidget(QListWidget):
             e.ignore()
         else:
             super().wheelEvent(e)
+
+
+class NoScrollSpinBox(QSpinBox):
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class NoScrollComboBox(QComboBox):
+    def wheelEvent(self, e):
+        e.ignore()
 
 
 class SmoothScrollArea(QScrollArea):
@@ -2122,6 +2135,7 @@ class SplashScreen(QWidget):
         "Initializing runtime environment...",
         "Checking for updates...",
         "Loading profiles and configuration...",
+        "Loading snipe history...",
         "Preparing snipe engine...",
         "Ready.",
     ]
@@ -3388,7 +3402,7 @@ class DashboardPage(QWidget):
         self._ps_key = KeySequenceEdit(); self._ps_key.setPlaceholderText("Pause Key")
         self._ps_key.setMaximumWidth(120)
         self._ps_chk = QCheckBox(); self._ps_chk.setChecked(True)
-        self._ps_dur = QSpinBox(); self._ps_dur.setRange(1, 600)
+        self._ps_dur = NoScrollSpinBox(); self._ps_dur.setRange(1, 600)
         self._ps_dur.setValue(60); self._ps_dur.setSuffix("s")
         ps_row.addWidget(lbl("Pause Sniper:", "FieldLbl"))
         ps_row.addWidget(self._ps_key); ps_row.addWidget(QLabel("For:"))
@@ -3944,8 +3958,8 @@ class SettingsPage(QWidget):
         wl.addWidget(self._sec_autojoin())
         wl.addWidget(self._sec_cooldown())
         wl.addWidget(self._sec_sound_alert())
-        wl.addWidget(self._sec_extra_tokens())
         wl.addWidget(self._sec_appearance())
+        wl.addWidget(self._sec_extra_tokens())
         self._dev_sec = self._sec_dev(); self._dev_sec.setVisible(self._dev)
         wl.addWidget(self._dev_sec)
         wl.addStretch()
@@ -4111,7 +4125,7 @@ class SettingsPage(QWidget):
         self._chk_close.setChecked(self._cfg.close_roblox_before_join); lay.addWidget(self._chk_close)
 
         delay_row = QHBoxLayout(); delay_row.addWidget(lbl("Join delay (ms):", "FieldLbl"))
-        self._spn = QSpinBox(); self._spn.setRange(0, 5000)
+        self._spn = NoScrollSpinBox(); self._spn.setRange(0, 5000)
         self._spn.setValue(self._cfg.auto_join_delay_ms)
         delay_row.addWidget(self._spn); delay_row.addStretch(); lay.addLayout(delay_row)
 
@@ -4124,7 +4138,7 @@ class SettingsPage(QWidget):
         lay.addLayout(pause_hdr)
 
         pause_row = QHBoxLayout()
-        self._spn_pause = QSpinBox(); self._spn_pause.setRange(0, 300)
+        self._spn_pause = NoScrollSpinBox(); self._spn_pause.setRange(0, 300)
         self._spn_pause.setValue(getattr(self._cfg, "pause_after_snipe_s", 0))
         self._spn_pause.setSuffix(" s")
         pause_row.addWidget(self._spn_pause); pause_row.addStretch()
@@ -4144,7 +4158,7 @@ class SettingsPage(QWidget):
         biome_hdr.addStretch()
         lay.addLayout(biome_hdr)
 
-        self._biome_leave_combo = QComboBox()
+        self._biome_leave_combo = NoScrollComboBox()
         self._biome_leave_combo.addItems([
             "Do nothing",
             "Close Roblox",
@@ -4164,11 +4178,11 @@ class SettingsPage(QWidget):
             "Prevents the engine from re-joining from the same source too quickly.\n"
             "Set to 0 to disable that scope.", "FieldHint"))
 
-        def _row(label: str, tooltip: str, attr: str, max_val: int = 300) -> QSpinBox:
+        def _row(label: str, tooltip: str, attr: str, max_val: int = 300) -> NoScrollSpinBox:
             row_w = QHBoxLayout()
             row_w.addWidget(lbl(label, "FieldLbl"))
             row_w.addWidget(HelpIcon(tooltip))
-            spn = QSpinBox(); spn.setRange(0, max_val); spn.setSuffix(" s")
+            spn = NoScrollSpinBox(); spn.setRange(0, max_val); spn.setSuffix(" s")
             spn.setValue(int(getattr(self._cfg, attr, 0)))
             spn.valueChanged.connect(self._schedule_save)
             row_w.addWidget(spn); row_w.addStretch()
@@ -4192,7 +4206,7 @@ class SettingsPage(QWidget):
     def _sec_appearance(self) -> QFrame:
         c, lay = self._card("Appearance")
         lay.addWidget(lbl("Theme:", "FieldLbl"))
-        self._theme_combo = QComboBox()
+        self._theme_combo = NoScrollComboBox()
         self._theme_combo.addItems(["Dark", "Light", "OLED"])
         theme_map = {"dark": 0, "light": 1, "oled": 2}
         self._theme_combo.setCurrentIndex(theme_map.get(self._cfg.theme, 0))
@@ -4222,7 +4236,7 @@ class SettingsPage(QWidget):
         freq_row = QHBoxLayout()
         freq_row.addWidget(lbl("Frequency (Hz):", "FieldLbl"))
         freq_row.addWidget(HelpIcon("Pitch of the global beep. Ignored when a profile uses a custom sound file."))
-        self._spn_sound_freq = QSpinBox(); self._spn_sound_freq.setRange(200, 8000)
+        self._spn_sound_freq = NoScrollSpinBox(); self._spn_sound_freq.setRange(200, 8000)
         self._spn_sound_freq.setValue(getattr(self._cfg, "sound_alert_freq", 1000))
         self._spn_sound_freq.valueChanged.connect(self._schedule_save)
         freq_row.addWidget(self._spn_sound_freq); freq_row.addStretch()
@@ -4230,7 +4244,7 @@ class SettingsPage(QWidget):
 
         dur_row = QHBoxLayout()
         dur_row.addWidget(lbl("Duration (ms):", "FieldLbl"))
-        self._spn_sound_dur = QSpinBox(); self._spn_sound_dur.setRange(50, 2000)
+        self._spn_sound_dur = NoScrollSpinBox(); self._spn_sound_dur.setRange(50, 2000)
         self._spn_sound_dur.setSuffix(" ms")
         self._spn_sound_dur.setValue(getattr(self._cfg, "sound_alert_dur_ms", 200))
         self._spn_sound_dur.valueChanged.connect(self._schedule_save)
@@ -4255,11 +4269,11 @@ class SettingsPage(QWidget):
             daemon=True, name="SoundTest").start()
 
     def _sec_extra_tokens(self) -> QFrame:
-        c, lay = self._card("Extra Discord Tokens")
+        c, lay = self._card("Additional Discord Accounts")
         lay.addWidget(lbl(
-            "Add additional Discord account tokens to monitor channels simultaneously.\n"
-            "Each extra token runs a secondary gateway in listen-only mode — it receives\n"
-            "messages but does not change the displayed connection status.",
+            "Add extra Discord accounts to increase sniping efficiency.\n"
+            "Extra accounts act as additional listeners — they detect links the same\n"
+            "way as the main account, improving response time with parallel listening.",
             "FieldHint"))
         lay.addWidget(lbl(
             "⚠  Using self-bot tokens may violate Discord ToS. Use at your own risk.",
@@ -4335,7 +4349,7 @@ class SettingsPage(QWidget):
         self._chk_lf = QCheckBox("Log to file")
         self._chk_lf.setChecked(self._cfg.log_to_file); lay.addWidget(self._chk_lf)
         row = QHBoxLayout(); row.addWidget(lbl("Log tail bytes:", "FieldLbl"))
-        self._spn_tail = QSpinBox(); self._spn_tail.setRange(1024, 65536)
+        self._spn_tail = NoScrollSpinBox(); self._spn_tail.setRange(1024, 65536)
         self._spn_tail.setValue(self._cfg.log_tail_bytes)
         row.addWidget(self._spn_tail); row.addStretch(); lay.addLayout(row)
         lay.addWidget(lbl("Ctrl+Shift+D to toggle dev mode.", "FieldHint"))
@@ -4660,7 +4674,7 @@ class LogsPage(QWidget):
         col.addWidget(lbl("Logs", "PageTitle"))
         hdr.addLayout(col); hdr.addStretch()
 
-        self._filter_combo = QComboBox()
+        self._filter_combo = NoScrollComboBox()
         self._filter_combo.addItems(["All", "INFO", "SUCCESS", "WARN", "ERROR", "DEBUG", "SNIPE"])
         self._filter_combo.setFixedWidth(90)
         self._filter_combo.currentIndexChanged.connect(self._on_filter_changed)
@@ -4848,7 +4862,7 @@ class NotificationsPage(QWidget):
 
         lay.addWidget(hdiv())
         lay.addWidget(lbl("Ping type:", "GrpLabel"))
-        self._ping_combo = QComboBox()
+        self._ping_combo = NoScrollComboBox()
         self._ping_combo.addItems(["No ping", "Specific Role", "Specific User"])
         ping_map = {"none": 0, "role": 1, "user": 2}
         self._ping_combo.setCurrentIndex(ping_map.get(wh.ping_type, 0))
@@ -5018,7 +5032,7 @@ class BlacklistPage(QWidget):
 
         dw_row = QHBoxLayout(); dw_row.setSpacing(10)
         dw_row.addWidget(lbl("Watch window (seconds):", "FieldLbl"))
-        self._dw_spin = QSpinBox()
+        self._dw_spin = NoScrollSpinBox()
         self._dw_spin.setRange(0, 300)
         self._dw_spin.setValue(0)
         self._dw_spin.setSuffix(" s")
@@ -5491,10 +5505,12 @@ class PluginsPage(QWidget):
 # MAIN WINDOW
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, history: Optional[SnipeHistoryManager] = None):
         super().__init__()
         self._dev  = False
         self._cfg  = SniperConfig.load()
+        self._preloaded_history = history
+        self._history_for_page = history
         self._br:  Optional[Bridge] = None
         self._run  = False
         self._re:  int              = Edge.NONE
@@ -5623,6 +5639,8 @@ class MainWindow(QMainWindow):
         self._pl  = LogsPage(self._dev)
         self._ppg = PluginsPage()
         self._phi = SnipeHistoryPage()
+        if self._history_for_page:
+            self._phi.set_history(self._history_for_page)
 
         for pg in (self._pd, self._pse, self._pn, self._pbl, self._pl, self._phi, self._ppg):
             self._stk.addWidget(pg)
@@ -6080,8 +6098,11 @@ def main():
 
     splash = SplashScreen()
 
+    app_dir = _get_app_dir()
+    hist = SnipeHistoryManager(app_dir / "snipe_history.json")
+
     def _on_splash_done():
-        win = MainWindow()
+        win = MainWindow(history=hist)
         win.show()
 
     splash.finished.connect(_on_splash_done)
