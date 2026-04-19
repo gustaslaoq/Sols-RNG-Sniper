@@ -80,25 +80,16 @@ class _Patterns:
         r"https?://(?:rb\.gy|bit\.ly|tinyurl\.com|t\.co|discord\.gg|discord\.com/invite|isgd\.it|cutt\.ly)/[\w/-]+",
         re.IGNORECASE)
 
-    BIOME_PATTERNS = [
-        re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
-        re.compile(r'"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
-        re.compile(r"'largeImage'\s*:\s*\{[^}]*'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
-        re.compile(r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
-        re.compile(r'"largeImage"\s*:\s*\{[^}]*\'hoverText\'\s*:\s*\'([^\']+)\'', re.IGNORECASE),
-        re.compile(r"'largeImage'\s*:\s*\{[^}]*\"hoverText\"\s*:\s*\"([^\"]+)\"", re.IGNORECASE),
-        re.compile(r'hoverText=([^\s,}\]]+)', re.IGNORECASE),
-        re.compile(r'hoverText:\s*([^\s,}\]]+)', re.IGNORECASE),
-        re.compile(r'hoverText["\']?\s*[:=]\s*["\']([^"\']+)["\']', re.IGNORECASE),
-        re.compile(
-            r'\b(NORMAL|GLITCHED|DREAMSPACE|CYBERSPACE|NULL|STARLIGHT|HEAVEN|CORRUPTED|ABYSSAL)\b',
-            re.IGNORECASE),
-    ]
+BIOME_PATTERNS = [
+    re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
+    re.compile(r'"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
+    re.compile(r"'largeImage'\s*:\s*\{[^}]*'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
+    re.compile(r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
+]
 
-    BIOME_DIRECT = frozenset([
-        "NORMAL", "GLITCHED", "DREAMSPACE", "CYBERSPACE",
-        "NULL", "STARLIGHT", "HEAVEN", "CORRUPTED", "ABYSSAL",
-    ])
+BIOME_IGNORE = frozenset([
+    "SOL'S RNG", "ROBLOX", "RO BLOX",
+])
 
 
 PATTERNS = _Patterns()
@@ -565,6 +556,26 @@ class ProcessManager:
         return False
 
     @staticmethod
+    def has_active_logs() -> bool:
+        if not ROBLOX_LOG_PATH.exists():
+            return False
+        try:
+            logs = list(ROBLOX_LOG_PATH.glob("*.log"))
+            if not logs:
+                return False
+            now = time.time()
+            for p in logs:
+                try:
+                    mtime = p.stat().st_mtime
+                    if now - mtime < 30:
+                        return True
+                except OSError:
+                    continue
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def open_roblox_link(uri: str):
         try:
             system = platform.system()
@@ -750,13 +761,9 @@ class AutoPlayManager:
 
 class RobloxLogReader:
 
-    _BIOME_WORD_RE: dict = {
-        b: re.compile(rf"\b{b}\b", re.IGNORECASE)
-        for b in PATTERNS.BIOME_DIRECT
-    }
+    _BIOME_WORD_RE: dict = {}
 
-    # Ignore these hoverText values — they are UI labels, not biome names.
-    _HOVER_IGNORE = frozenset(["SOL'S RNG", "ROBLOX", ""])
+    _HOVER_IGNORE = BIOME_IGNORE | frozenset([""])
 
     def __init__(self, tail_bytes: int = LOG_TAIL_BYTES):
         self.tail_bytes           = tail_bytes
@@ -773,6 +780,13 @@ class RobloxLogReader:
         self._seek_pos.clear()
         self._read_buf.clear()
         self._last_known_biome = None
+        self._launch_log_offset: dict = {}
+        if ROBLOX_LOG_PATH.exists():
+            for p in ROBLOX_LOG_PATH.glob("*.log"):
+                try:
+                    self._launch_log_offset[p] = p.stat().st_size
+                except OSError:
+                    pass
 
     def reset_session(self):
         self._launch_time = 0.0
@@ -805,53 +819,31 @@ class RobloxLogReader:
         stat_map.sort(key=lambda x: x[1], reverse=True)
         return stat_map[0][0]
 
+    def _force_refresh_log(self):
+        self._session_log = None
+
 
     def _parse_biome_from_line(self, line: str) -> Optional[str]:
-        """
-        Extract the biome name from a single log line.
-
-        Real log format (confirmed from production):
-          23:32:52 -- [BloxstrapRPC] {"command":"SetRichPresence","data":{"state":"...",
-            "smallImage":{"hoverText":"Sol's RNG","assetId":...},
-            "largeImage":{"hoverText":"RAINY","assetId":...}}}
-
-        IMPORTANT: only largeImage.hoverText carries the biome name.
-        smallImage.hoverText is always "Sol's RNG" and must not be returned.
-
-        Priority:
-          1. BloxstrapRPC full JSON parse → data.largeImage.hoverText only.
-          2. Bare regex on "largeImage"…"hoverText" fragment (truncated lines).
-          3. Word-boundary biome name fallback.
-        """
-        if "BloxstrapRPC" in line and "SetRichPresence" in line:
+        if "BloxstrapRPC" not in line or "SetRichPresence" not in line:
+            return None
+        if "Sol's RNG" not in line and "Sol\\'s RNG" not in line:
+            return None
+        
+        if '"largeImage":{"hoverText":"' in line:
             try:
-                json_start = line.find("{")
-                if json_start != -1:
-                    raw = line[json_start:]
-                    blob = json.loads(raw)
-                    large = blob.get("data", {}).get("largeImage", {})
-                    hover = large.get("hoverText", "")
-                    if hover:
-                        candidate = hover.strip().upper()
-                        if candidate not in self._HOVER_IGNORE:
-                            return candidate
-            except (json.JSONDecodeError, ValueError, AttributeError, KeyError):
+                biome = line.split('"largeImage":{"hoverText":"')[1].split('"')[0].strip().upper()
+                if biome and biome not in self._HOVER_IGNORE:
+                    return biome
+            except (IndexError, AttributeError):
                 pass
-
+        
         if "largeImage" in line and "hoverText" in line:
-            m = re.search(
-                r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"',
-                line, re.IGNORECASE)
+            m = re.search(r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"', line, re.IGNORECASE)
             if m:
                 candidate = m.group(1).strip().upper()
                 if candidate not in self._HOVER_IGNORE:
                     return candidate
-
-        if "BloxstrapRPC" not in line and "hoverText" not in line:
-            for biome, pat in self._BIOME_WORD_RE.items():
-                if pat.search(line):
-                    return biome
-
+        
         return None
 
 
@@ -874,7 +866,8 @@ class RobloxLogReader:
         last_pos = self._seek_pos.get(path, 0)
 
         if last_pos == 0 and size > 0:
-            start = max(0, size - self.tail_bytes)
+            launch_offset = getattr(self, "_launch_log_offset", {}).get(path, 0)
+            start = max(launch_offset, size - self.tail_bytes)
         else:
             start = last_pos
 
@@ -932,6 +925,8 @@ class RobloxLogReader:
                     self._session_log = newer
                     self._seek_pos[newer] = 0
                     self._read_buf[newer] = ""
+                    if hasattr(self, "_launch_log_offset"):
+                        self._launch_log_offset.pop(old, None)
                     path = newer
         except Exception:
             pass
@@ -941,23 +936,56 @@ class RobloxLogReader:
 
 
     def wait_for_biome(self, timeout: float = 75.0, poll: float = 1.0) -> Optional[str]:
-        path = self._session_log or self._find_session_log()
-        if path:
-            self._session_log = path
-            self._ingest_new_bytes(path)
-            buf   = self._read_buf.get(path, "")
-            found = self._scan_buffer(buf)
-            if found:
-                self._last_known_biome = found
-                return found
-
+        launch_time = self._launch_time
         end = time.time() + timeout
+
         while time.time() < end:
+            if not ROBLOX_LOG_PATH.exists():
+                time.sleep(poll)
+                continue
+            
+            best_log = None
+            best_mtime = 0
+            
+            try:
+                for p in ROBLOX_LOG_PATH.glob("*.log"):
+                    try:
+                        mtime = p.stat().st_mtime
+                        if mtime > best_mtime:
+                            best_mtime = mtime
+                            best_log = p
+                    except OSError:
+                        continue
+            except Exception:
+                pass
+            
+            if best_log and best_mtime >= launch_time - 2:
+                self._session_log = best_log
+                self._seek_pos[best_log] = 0
+                self._read_buf[best_log] = ""
+                if hasattr(self, "_launch_log_offset"):
+                    self._launch_log_offset[best_log] = 0
+                
+                biome = self.get_current_biome()
+                if biome:
+                    self._last_known_biome = biome
+                    return biome
+            
             time.sleep(poll)
-            biome = self.get_current_biome()
-            if biome:
-                return biome
+
         return None
+
+    def debug_biome_detection(self) -> str:
+        """Debug - retorna info sobre detecção de bioma"""
+        path = self._session_log or self._find_session_log()
+        if not path:
+            return f"No log file. _session_log={self._session_log}, _last_known={self._last_known_biome}"
+        
+        self._ingest_new_bytes(path)
+        buf = self._read_buf.get(path, "")
+        found = self._scan_buffer(buf)
+        
+        return f"log={path.name}, buf_len={len(buf)}, found={found}, last_known={self._last_known_biome}"
 
 # LINK RESOLVER
 
@@ -1723,7 +1751,8 @@ class SniperEngine:
                 await asyncio.sleep(self.config.auto_join_delay_ms / 1000)
 
             roblox_running   = ProcessManager.is_roblox_running()
-            in_game          = ProcessManager.is_in_game() if roblox_running else False
+            has_logs = ProcessManager.has_active_logs()
+            in_game = has_logs if roblox_running else False
             force_close      = self.config.close_roblox_before_join
             self._log(LogLevel.DEBUG,
                 f"[JOIN] roblox_running={roblox_running}, in_game={in_game}, "
@@ -1732,20 +1761,9 @@ class SniperEngine:
 
             loop = asyncio.get_running_loop()
 
-            if roblox_running and (in_game or force_close):
-                reason = "in a game" if in_game else "'Close Roblox before joining' is on"
+            if roblox_running:
                 self._log(LogLevel.INFO,
-                    f"[JOIN] Killing Roblox ({reason})…")
-                await loop.run_in_executor(
-                    None, lambda: ProcessManager.kill_roblox_and_wait(timeout=5.0))
-                await asyncio.sleep(0.4)
-                self._log_reader.mark_launch()
-                ProcessManager.open_roblox_link(uri)
-                self._log(LogLevel.INFO, "[JOIN] Relaunched — joining server…")
-
-            elif roblox_running:
-                self._log(LogLevel.INFO,
-                    "[JOIN] Roblox is on home page — opening link…")
+                    "[JOIN] Roblox already open — joining directly…")
                 self._log_reader.mark_launch()
                 ProcessManager.open_roblox_link(uri)
 
@@ -1872,6 +1890,19 @@ class SniperEngine:
         expected = profile.verify_biome_name.upper()
         self._log(LogLevel.INFO,
             f"[ANTI-BAIT] Waiting for biome in log… (expected: {expected}, timeout: 75s)")
+        
+        log_path = self._log_reader._session_log or self._log_reader._find_session_log()
+        if log_path:
+            self._log(LogLevel.DEBUG,
+                f"[ANTI-BAIT] Using log file: {log_path.name}", dev_only=True)
+        else:
+            self._log(LogLevel.WARN,
+                "[ANTI-BAIT] No log file found!")
+        
+        debug_info = self._log_reader.debug_biome_detection()
+        self._log(LogLevel.DEBUG,
+            f"[ANTI-BAIT] Debug: {debug_info}", dev_only=True)
+        
         biome = await loop.run_in_executor(
             None, lambda: self._log_reader.wait_for_biome(75.0))
 
@@ -1910,8 +1941,15 @@ class SniperEngine:
                 if action == "home":
                     self._log(LogLevel.INFO,
                         "[ANTI-BAIT] Wrong biome — killing Roblox and returning to home…")
-                    await loop.run_in_executor(
-                        None, lambda: self._execute_biome_leave("home"))
+                    try:
+                        await loop.run_in_executor(
+                            None, lambda: self._execute_biome_leave("home"))
+                    except Exception as exc:
+                        self._log(LogLevel.ERROR,
+                            f"[ANTI-BAIT] Failed to return to home: {exc}")
+                elif action == "kill":
+                    self._log(LogLevel.WARN, "[ANTI-BAIT] Killing Roblox…")
+                    ProcessManager.kill_roblox()
                 else:
                     self._log(LogLevel.WARN, "[ANTI-BAIT] Killing Roblox…")
                     ProcessManager.kill_roblox()
@@ -1975,33 +2013,36 @@ class SniperEngine:
                 stable_count = 0
 
     def _execute_biome_leave(self, action: str):
-        self._log(LogLevel.DEBUG,
-            f"[BIOME WATCHER] _execute_biome_leave called with action='{action}'",
-            dev_only=True)
+        if action == "kill":
+            ProcessManager.kill_roblox()
+            if self._plugins:
+                self._plugins.broadcast("on_biome_left", {"action": action})
+            return
+        elif action == "home":
+            killed = False
+            roblox_running = ProcessManager.is_roblox_running()
+            has_logs = ProcessManager.has_active_logs()
+            in_game = has_logs
+            
+            if not roblox_running:
+                self._log_reader.mark_launch()
+                try:
+                    os.startfile("roblox://")
+                except Exception:
+                    pass
+                self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox was closed — relaunched to home.")
+            elif in_game:
+                killed = ProcessManager.kill_roblox_and_wait(timeout=5.0)
+                time.sleep(1.5)
+                self._log_reader.mark_launch()
+                try:
+                    os.startfile("roblox://")
+                except Exception:
+                    pass
+                self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox was in game — closed and relaunched to home.")
+            else:
+                self._log_reader.mark_launch()
+                self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox already on home page.")
+        
         if self._plugins:
             self._plugins.broadcast("on_biome_left", {"action": action})
-        if action == "kill":
-            self._log(LogLevel.INFO, "[BIOME WATCHER] Closing Roblox…")
-            ProcessManager.kill_roblox()
-        elif action == "home":
-            self._log(LogLevel.INFO,
-                "[BIOME WATCHER] Returning Roblox to home page — ready for next snipe…")
-            killed = ProcessManager.kill_roblox_and_wait(timeout=5.0)
-            self._log(LogLevel.DEBUG,
-                f"[BIOME WATCHER] kill_roblox_and_wait result={killed}", dev_only=True)
-            time.sleep(0.5)
-            self._log_reader.mark_launch()   # reset log reader so next snipe reads fresh log
-            try:
-                if platform.system() == "Windows":
-                    os.startfile("roblox://")
-                    self._log(LogLevel.DEBUG,
-                        "[BIOME WATCHER] os.startfile('roblox://') called", dev_only=True)
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["open", "roblox://"])
-                else:
-                    subprocess.Popen(["xdg-open", "roblox://"])
-            except Exception as exc:
-                self._log(LogLevel.ERROR, f"[BIOME WATCHER] Failed to relaunch Roblox: {exc}")
-        else:
-            self._log(LogLevel.DEBUG,
-                f"[BIOME WATCHER] Unknown action '{action}' — no-op", dev_only=True)
