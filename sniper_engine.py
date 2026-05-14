@@ -107,13 +107,17 @@ def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> 
     if filepath and Path(filepath).exists():
         try:
             if system == "Windows":
-                import winsound
-                winsound.PlaySound(filepath, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                import ctypes
+                fp = str(Path(filepath).resolve())
+                alias = f"snipersound_{int(time.monotonic())}"
+                cmd_open = f'open "{fp}" type mpegvideo alias {alias}'
+                cmd_play = f"play {alias}"
+                ctypes.windll.winmm.mciSendStringW(cmd_open, None, 0, None)
+                ctypes.windll.winmm.mciSendStringW(cmd_play, None, 0, None)
             elif system == "Darwin":
                 subprocess.Popen(["afplay", filepath],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                # Try paplay (PulseAudio), then aplay (ALSA), then pacat
                 for cmd in (["paplay", filepath], ["aplay", filepath]):
                     try:
                         subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -1294,7 +1298,56 @@ class DiscordGateway:
                 if "value" in fld:
                     embed_parts.append(fld["value"])
 
-        full_content = f"{content} {' '.join(embed_parts)}".strip()
+        component_buttons = []
+        for component in data.get("components", []):
+            if not isinstance(component, dict):
+                continue
+            for item in component.get("components", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == 2:
+                    btn_label = item.get("label", "")
+                    btn_url = item.get("url", "")
+                    if btn_label:
+                        component_buttons.append((btn_label, btn_url))
+
+        component_parts = [b[0] for b in component_buttons]
+        if component_buttons:
+            for btn in component_buttons:
+                if btn[1]:
+                    component_parts.append(btn[1])
+
+        full_content = f"{content} {' '.join(embed_parts)} {' '.join(component_parts)}".strip()
+
+        embed_parts = []
+        for embed in data.get("embeds", []):
+            if not isinstance(embed, dict):
+                continue
+            for key in ("title", "description"):
+                if key in embed:
+                    embed_parts.append(embed[key])
+            for fld in embed.get("fields", []):
+                if "value" in fld:
+                    embed_parts.append(fld["value"])
+
+        component_parts = []
+        component_buttons = []
+        for component in data.get("components", []):
+            if not isinstance(component, dict):
+                continue
+            for item in component.get("components", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == 2:
+                    btn_label = item.get("label", "")
+                    btn_url = item.get("url", "")
+                    if btn_label:
+                        component_parts.append(btn_label)
+                        component_buttons.append((btn_label, btn_url))
+                    if btn_url:
+                        component_parts.append(btn_url)
+
+        full_content = f"{content} {' '.join(embed_parts)} {' '.join(component_parts)}".strip()
         astr         = author.get("username", "?")
         author_id    = author.get("id", "").strip()
         avatar_hash  = author.get("avatar", "")
@@ -1323,6 +1376,7 @@ class DiscordGateway:
             author_id=author_id,
             author_avatar_url=author_avatar_url,
             author_display=author_display,
+            buttons=component_buttons if component_buttons else None,
         )
 
     async def _on_message_delete(self, data: dict):
@@ -1387,6 +1441,9 @@ class SniperEngine:
 
         # message ID dedup buffer
         self._seen_msg_ids: deque = deque(maxlen=self._MSG_DEDUP_SIZE)
+
+        # pending updates observation {msg_id: first_seen_timestamp}
+        self._pending_updates: dict = {}
 
         # server-URI dedup  {uri: expiry_monotonic}
         self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
@@ -1629,20 +1686,33 @@ class SniperEngine:
     async def _on_discord_message(self, guild_id: str, channel_id: str,
                                   msg_id: str, content: str, author: str, full: str,
                                   author_id: str = "", author_avatar_url: str = "",
-                                  author_display: str = ""):
+                                  author_display: str = "", buttons: list = None,
+                                  is_update: bool = False):
         if self._paused:
             return
+
+        now = time.monotonic()
+
+        # clean up old pending updates (older than 60 seconds)
+        expired = [mid for mid, ts in self._pending_updates.items()
+                  if now - ts > 60]
+        for mid in expired:
+            del self._pending_updates[mid]
 
         self.metrics["messages_scanned"] += 1
         self._log(LogLevel.DEBUG,
             f"[MSG] Processing from {author}: {content[:60]}", dev_only=True)
 
-        if msg_id and msg_id in self._seen_msg_ids:
+        if msg_id and msg_id in self._seen_msg_ids and not is_update:
             self._log(LogLevel.DEBUG,
                 f"[DEDUP] Message ID already processed — skip", dev_only=True)
             return
-        if msg_id:
+        if not is_update and msg_id:
             self._seen_msg_ids.append(msg_id)
+
+        # check if this message is being observed as pending update
+        if is_update and msg_id in self._pending_updates:
+            del self._pending_updates[msg_id]
 
         if self.blacklist and author_id and self.blacklist.is_blacklisted(author_id):
             entry = self.blacklist.get_entry(author_id)
@@ -1666,6 +1736,8 @@ class SniperEngine:
                 self._log(LogLevel.DEBUG,
                     f"[FILTER] Skipped — {reject_reason} — {author}: {content[:60]}",
                     dev_only=True)
+            if not is_update and msg_id:
+                self._pending_updates[msg_id] = time.monotonic()
             return
 
         self._log(LogLevel.DEBUG,
@@ -1684,6 +1756,8 @@ class SniperEngine:
             self._log(LogLevel.INFO,
                 f"[FILTER] Profile '{profile.name}' matched but no Roblox link found — "
                 f"{author}: {content[:60]}")
+            if not is_update and msg_id:
+                self._pending_updates[msg_id] = time.monotonic()
             return
 
         self.metrics["links_detected"] += 1
@@ -1786,12 +1860,12 @@ class SniperEngine:
                 f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
                 f"anti_bait={self.config.anti_bait_enabled})", dev_only=True)
 
-        if getattr(self.config, "sound_alert_enabled", False):
+        snd_path   = getattr(profile, "sound_alert_path", "") if profile else ""
+        sound_enabled = getattr(self.config, "sound_alert_enabled", False)
+        if sound_enabled or snd_path:
             self._log(LogLevel.DEBUG, "[ENGINE] Sound alert firing…", dev_only=True)
             freq       = getattr(self.config, "sound_alert_freq",   1000)
             dur        = getattr(self.config, "sound_alert_dur_ms",  200)
-
-            snd_path   = getattr(profile, "sound_alert_path", "") if profile else ""
             threading.Thread(
                 target=lambda: play_sound(freq, dur, snd_path),
                 daemon=True, name="SoundAlert").start()
@@ -1812,6 +1886,7 @@ class SniperEngine:
             "link":              uri,
             "jump_url":          jump_url,
             "timestamp_iso":     datetime.now().isoformat(),
+            "buttons":           buttons if buttons else [],
         }
 
         try:

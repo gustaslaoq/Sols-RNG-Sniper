@@ -1,5 +1,5 @@
 from __future__ import annotations
-#
+
 import sys
 import subprocess
 import os
@@ -758,6 +758,15 @@ class WebhookSender:
                     "value":  f"```{raw_msg[:900]}```",
                     "inline": False,
                 })
+            buttons_data = kwargs.get("buttons", [])
+            if buttons_data:
+                buttons_str = "\n".join([f"**[{btn[0]}]({btn[1]})**" for btn in buttons_data if len(btn) >= 2])
+                if buttons_str:
+                    embed["fields"].append({
+                        "name":   "Buttons",
+                        "value":  buttons_str,
+                        "inline": False,
+                    })
 
         elif event_type == "biome":
             if not self.config.on_biome:
@@ -4383,7 +4392,9 @@ class SettingsPage(QWidget):
             self._add_ch_status.setStyleSheet(f"color: {C['red2']}; font-size: 10px;")
             self._add_ch_status.setText("Both Server ID and Channel ID are required.")
             return
-        token = self._tok.text().strip() or self._cfg.token
+        main_token = self._tok.text().strip() or self._cfg.token
+        extra = list(getattr(self._cfg, "extra_tokens", []))
+        all_tokens = [main_token] + [t for t in extra if t and t != main_token]
         self._add_ch_status.setStyleSheet(f"color: {C['yellow']}; font-size: 10px;")
         self._add_ch_status.setText("Fetching channel info…")
 
@@ -4393,28 +4404,32 @@ class SettingsPage(QWidget):
             guild_name   = g
             channel_name = ch
             category     = ""
-            try:
-                import urllib.request as _ur
-                headers = {"Authorization": token, "User-Agent": "SniperApp/1.0"}
+            used_token   = main_token[:10] + "…" if len(main_token) > 10 else main_token
+            for token in all_tokens:
+                try:
+                    import urllib.request as _ur
+                    headers = {"Authorization": token, "User-Agent": "SniperApp/1.0"}
 
-                def _get(url):
-                    req = _ur.Request(url, headers=headers)
-                    with _ur.urlopen(req, timeout=6) as r:
-                        return json.loads(r.read())
+                    def _get(url):
+                        req = _ur.Request(url, headers=headers)
+                        with _ur.urlopen(req, timeout=6) as r:
+                            return json.loads(r.read())
 
-                gdata      = _get(f"https://discord.com/api/v10/guilds/{g}")
-                guild_name = gdata.get("name", g)
+                    gdata      = _get(f"https://discord.com/api/v10/guilds/{g}")
+                    guild_name = gdata.get("name", g)
 
-                channels = _get(f"https://discord.com/api/v10/guilds/{g}/channels")
-                cats     = {str(c["id"]): c["name"] for c in channels if c.get("type") == 4}
-                for c in channels:
-                    if str(c.get("id")) == ch:
-                        channel_name = c.get("name", ch)
-                        parent_id    = str(c.get("parent_id") or "")
-                        category     = cats.get(parent_id, "")
-                        break
-            except Exception:
-                pass
+                    channels = _get(f"https://discord.com/api/v10/guilds/{g}/channels")
+                    cats     = {str(c["id"]): c["name"] for c in channels if c.get("type") == 4}
+                    for c in channels:
+                        if str(c.get("id")) == ch:
+                            channel_name = c.get("name", ch)
+                            parent_id    = str(c.get("parent_id") or "")
+                            category     = cats.get(parent_id, "")
+                            break
+                    used_token = token[:10] + "…" if len(token) > 10 else token
+                    break
+                except Exception:
+                    continue
 
             if category:
                 display = f"{guild_name}  ›  {category} / #{channel_name}"
