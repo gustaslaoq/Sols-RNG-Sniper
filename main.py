@@ -169,7 +169,7 @@ _setup_crash_reporter()
 
 
 APP_NAME      = "SLAOQ'S SOL'S RNG SNIPER"
-APP_VERSION   = "1.0"
+APP_VERSION   = "1.1"
 GITHUB_REPO   = "gustaslaoq/Sols-RNG-Sniper"
 EXE_NAME      = "SlaoqSniper"
 _UPDATE_TRIGGERED = False
