@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import logging
 import ctypes
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -119,11 +120,13 @@ class StartupController(QObject):
         self._splash = splash
         self._window = window
         self._threads: list[QThread] = []
+        self._workers: list[UpdateWorker] = []
         self._min_splash_done = False
         self._open_requested = False
         self._opened = False
         self._dialog_open = False
         self._update_check_pending = False
+        self._update_check_started_at = 0.0
         self._update_prompt: UpdatePromptDialog | None = None
         QTimer.singleShot(850, self._mark_min_splash_done)
         QTimer.singleShot(7000, self._force_open)
@@ -160,8 +163,10 @@ class StartupController(QObject):
     def _start_worker(self, worker: UpdateWorker) -> None:
         thread = QThread(self)
         self._threads.append(thread)
+        self._workers.append(worker)
         if worker._mode == "check":
             self._update_check_pending = True
+            self._update_check_started_at = time.monotonic()
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.checked.connect(self._on_update_checked)
@@ -172,10 +177,14 @@ class StartupController(QObject):
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
         thread.start()
 
     def _on_update_checked(self, update: UpdateInfo | None) -> None:
         self._update_check_pending = False
+        self._update_check_started_at = 0.0
+        if self._opened:
+            return
         if update is None:
             self._splash.set_message("No updates found")
             self._splash.set_progress(74)
@@ -294,6 +303,9 @@ class StartupController(QObject):
 
     def _on_update_failed(self, message: str) -> None:
         self._update_check_pending = False
+        self._update_check_started_at = 0.0
+        if self._opened:
+            return
         logging.getLogger("slaoq_sniper_v2.app").warning("Update flow failed: %s", message)
         self._splash.set_progress(72)
         self._show_message(
@@ -356,6 +368,18 @@ class StartupController(QObject):
         if self._opened:
             return
         if self._update_check_pending:
+            elapsed = time.monotonic() - self._update_check_started_at
+            if elapsed >= 30:
+                logging.getLogger("slaoq_sniper_v2.app").warning(
+                    "Update check timeout reached after %.1fs; opening workspace", elapsed
+                )
+                self._update_check_pending = False
+                self._update_check_started_at = 0.0
+                self._min_splash_done = True
+                self._splash.set_message("Opening workspace")
+                self._splash.set_progress(96)
+                self._open_when_ready()
+                return
             self._splash.set_message("Still checking for updates")
             QTimer.singleShot(7000, self._force_open)
             return
