@@ -1,6 +1,6 @@
 APP_NAME = "SlaoqSniper"
 APP_DISPLAY_NAME = "Slaoq's Sol's RNG Sniper"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_DATA_DIR_NAME = "SlaoqSniper"
 GITHUB_OWNER = "gustaslaoq"
 GITHUB_REPO = "Sols-RNG-Sniper"

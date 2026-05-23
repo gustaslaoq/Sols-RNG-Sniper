@@ -1,9 +1,8 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "mandatory": false,
   "min_supported_version": "1.0.0",
   "asset_name": "SlaoqSniper.exe",
   "sha256": "PUT_REAL_SHA256_HERE",
   "notes": "V2 release with single-executable distribution, new updater, and plugin removal."
 }
-

@@ -24,7 +24,7 @@ logger = logging.getLogger("sniper_engine")
 try:
     from slaoq_sniper_v2.app_info import APP_VERSION
 except Exception:
-    APP_VERSION = "2.0.0"
+    APP_VERSION = "2.0.1"
 
 
 class EngineStatus(Enum):

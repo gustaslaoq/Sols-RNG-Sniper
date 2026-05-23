@@ -123,6 +123,7 @@ class StartupController(QObject):
         self._open_requested = False
         self._opened = False
         self._dialog_open = False
+        self._update_check_pending = False
         self._update_prompt: UpdatePromptDialog | None = None
         QTimer.singleShot(850, self._mark_min_splash_done)
         QTimer.singleShot(7000, self._force_open)
@@ -159,6 +160,8 @@ class StartupController(QObject):
     def _start_worker(self, worker: UpdateWorker) -> None:
         thread = QThread(self)
         self._threads.append(thread)
+        if worker._mode == "check":
+            self._update_check_pending = True
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.checked.connect(self._on_update_checked)
@@ -172,6 +175,7 @@ class StartupController(QObject):
         thread.start()
 
     def _on_update_checked(self, update: UpdateInfo | None) -> None:
+        self._update_check_pending = False
         if update is None:
             self._splash.set_message("No updates found")
             self._splash.set_progress(74)
@@ -289,6 +293,7 @@ class StartupController(QObject):
         self._app.quit()
 
     def _on_update_failed(self, message: str) -> None:
+        self._update_check_pending = False
         logging.getLogger("slaoq_sniper_v2.app").warning("Update flow failed: %s", message)
         self._splash.set_progress(72)
         self._show_message(
@@ -349,6 +354,10 @@ class StartupController(QObject):
 
     def _force_open(self) -> None:
         if self._opened:
+            return
+        if self._update_check_pending:
+            self._splash.set_message("Still checking for updates")
+            QTimer.singleShot(7000, self._force_open)
             return
         if self._dialog_open:
             QTimer.singleShot(7000, self._force_open)
