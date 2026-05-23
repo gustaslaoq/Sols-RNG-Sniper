@@ -45,16 +45,7 @@ Read only this section if you want the shortest setup path.
 6. Make sure Roblox is installed.
 7. Click **Start Sniper** on the Home page.
 
-V2 comes with these monitored channels enabled by default:
-
-```text
-Server ID: 1186570213077041233
-Channel IDs:
-1282542323590496277
-1282543762425516083
-```
-
-For those default channels to work, the Discord account used by the sniper must be inside the Sol's RNG server and must have permission to read the private-server-link channels. A reference channel in that server is:
+For the sniper to work, the Discord account used by the sniper must be inside the Sol's RNG server and must have permission to read the private-server-link channels. You can access the server channel here:
 
 https://discord.com/channels/1186570213077041233/1435494951050805338
 
@@ -62,7 +53,7 @@ https://discord.com/channels/1186570213077041233/1435494951050805338
 
 ## Requirements
 
-- Windows 10 or Windows 11
+- At least Windows 10
 - Roblox installed
 - A Discord account that can access the channels you want to monitor
 - The Discord token for that account
@@ -93,7 +84,7 @@ Using an alternate account is strongly recommended.
 
 1. Open https://discord.com/app in your browser.
 2. Log in to the Discord account that the sniper will use.
-3. Press `F12`.
+3. Press `F12` or `Ctrl+Shift+I`.
 4. Open the **Network** tab.
 5. Type `science` in the request filter.
 6. Click one of the requests that appears.
@@ -110,8 +101,8 @@ Do not share this token. Anyone with it can access the account.
 V2 already includes two enabled Sol's RNG channels:
 
 ```text
-1186570213077041233 / 1282542323590496277
-1186570213077041233 / 1282543762425516083
+1282542323590496277 / 🌌・biomes
+1282543762425516083 / 🃏・merchants
 ```
 
 Open **Channels** and confirm they are enabled.
@@ -400,4 +391,4 @@ Use it responsibly, preferably with an alternate account, and never share tokens
 
 ## Credits
 
-Inspired by earlier Sol's RNG sniper projects and rebuilt in V2 as a single-executable Windows app with a new UI, updater, history, blacklist, webhooks, and configurable profiles.
+Inspired by [Sol Sniper V3](https://github.com/vexsyx/sniper-v3) by vexsyx.
