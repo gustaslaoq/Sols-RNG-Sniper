@@ -1,277 +1,403 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png" width="90" height="90" style="border-radius: 14px;" />
+<img src="https://raw.githubusercontent.com/gustaslaoq/Sols-RNG-Sniper/main/assets/logo.png" width="92" height="92" />
 
-# Slaoq's Sol's RNG Sniper
+# Slaoq's Sol's RNG Sniper V2
 
-**Automatic private server sniper for Sol's RNG on Roblox.**  
-Monitors Discord channels in real time and joins verified server links instantly.
+Automatic private server sniper for **Sol's RNG** on Roblox.
 
-<br>
+The app monitors Discord channels, detects matching private server links, and opens Roblox automatically.
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org/downloads)
-[![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?style=flat-square&logo=windows&logoColor=white)](#)
-[![License](https://img.shields.io/badge/License-GPL%20v3-blue?style=flat-square)](LICENSE)
-[![Download](https://img.shields.io/badge/Download-build.bat-00c853?style=flat-square&logo=github)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases/latest/download/build.bat)
+[![Windows](https://img.shields.io/badge/Windows-10%2B-0078d4?style=flat-square&logo=windows&logoColor=white)](#requirements)
+[![Download](https://img.shields.io/badge/Download-GitHub%20Releases-00c853?style=flat-square&logo=github)](#download)
+[![Version](https://img.shields.io/badge/Version-2.0.0-white?style=flat-square)](#)
 
 </div>
 
 ---
 
-## What it does
+## Read This First
 
-This app connects to Discord using your account token and watches specific channels for Roblox private server links. The moment a matching link appears it opens the link in Roblox automatically and verifies the biome so you don't get caught by bait servers.
+This sniper uses a **Discord user account token** to read messages. This is user-account automation/selfbot behavior and may violate Discord's Terms of Service.
 
-Everything runs as a compiled `.exe`. There is no coding required. Run `build.bat` once, configure, and use.
+Important recommendations:
+
+- Use an alternate Discord account, not your main account.
+- Never share your Discord token.
+- Never share webhook URLs.
+- Never publish logs/configs that may contain private server links.
+- The Discord account must be in the servers and channels you want to monitor.
+- Use this tool at your own risk.
+
+The app redacts Discord tokens, webhook URLs, and Roblox private links in logs/debug exports, but you should still treat your local data as sensitive.
 
 ---
 
-## Table of Contents
+## Quick Start
 
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [First-Time Setup](#first-time-setup)
-- [Settings Reference](#settings-reference)
-- [Dashboard](#dashboard)
-- [Snipe History](#snipe-history)
-- [Blacklist](#blacklist)
-- [Logs](#logs)
-- [Plugins](#plugins)
-- [Auto-Update](#auto-update)
-- [Hotkeys](#hotkeys)
-- [Troubleshooting](#troubleshooting)
-- [Disclaimer](#disclaimer)
+Read only this section if you want the shortest setup path.
+
+1. Download `SlaoqSniper.exe` from the latest GitHub Release.
+2. Open the app.
+3. Go to **Settings** and paste your Discord token.
+4. Go to **Channels** and confirm the default Sol's RNG channels are enabled.
+5. Go to **Profiles** and enable the profiles you want.
+6. Make sure Roblox is installed.
+7. Click **Start Sniper** on the Home page.
+
+V2 comes with these monitored channels enabled by default:
+
+```text
+Server ID: 1186570213077041233
+Channel IDs:
+1282542323590496277
+1282543762425516083
+```
+
+For those default channels to work, the Discord account used by the sniper must be inside the Sol's RNG server and must have permission to read the private-server-link channels. A reference channel in that server is:
+
+https://discord.com/channels/1186570213077041233/1435494951050805338
 
 ---
 
 ## Requirements
 
-### Python 3.10 or newer
+- Windows 10 or Windows 11
+- Roblox installed
+- A Discord account that can access the channels you want to monitor
+- The Discord token for that account
+- A stable internet connection
 
-1. Go to [python.org/downloads](https://python.org/downloads) and install Python
-2. **Important:** tick **"Add Python to PATH"** on the first installer screen
-
-### Git
-
-1. Go to [git-scm.com](https://git-scm.com) and install Git (default options are fine)
-
-Everything else (PySide6, PyInstaller, aiohttp, psutil, etc.) installs automatically via `build.bat`.
+Normal users do not need Python, Git, pip, or any development tools.
 
 ---
 
-## Installation
+## Download
 
-1. Download `build.bat` from the badge above
-2. Double-click it — a console window runs through 9 build steps (~3–5 min)
-3. Press any key when done to launch
+1. Open the **Releases** page for this repository.
+2. Download `SlaoqSniper.exe`.
+3. Put the executable in its own folder.
+4. Run it.
 
-The script automatically picks the right install location. Running from Downloads or Desktop creates a `SlaoqSniper\` subfolder; running from a dedicated empty folder installs inline.
-
-**To update:** run `build.bat` again. It detects new commits and rebuilds automatically.
-
----
-
-## First-Time Setup
-
-Open **Settings** when the app first launches.
-
-### 1. Discord Token
-
-1. Open [discord.com/app](https://discord.com/app) in your **browser**
-2. Press `F12` → Network tab → filter for `science`
-3. Click any request → Request Headers → copy the `Authorization:` value
-4. Paste it into the **User Token** field
-
-> Never share your token. It gives full access to your Discord account.
-
-### 2. Monitored Channels
-
-Enable Developer Mode in Discord (Settings → Advanced → Developer Mode), then:
-
-1. Right-click the server icon → **Copy Server ID**
-2. Right-click the channel → **Copy Channel ID**
-3. Paste both IDs into Settings and click **+ Add Channel**
-
-### 3. Snipe Profiles
-
-All major Sol's RNG biomes are pre-configured out of the box: **Glitched, Dreamspace, Cyberspace, Null, Starlight, Heaven, Corrupted, Abyssal**. Each profile has the correct trigger keywords and biome verification name already set. Enable or disable them individually, or create new profiles for anything not covered.
-
-**The Global profile** runs first on every message and acts as a universal blacklist. Words like `ended`, `bait`, `fake`, `over`, `closed`, `gone` are blocked by default.
+Windows SmartScreen may show a warning because the executable is not digitally signed.
 
 ---
 
-## Settings Reference
+## Main Tutorial
 
-### Auto-Join
+This section explains the normal setup flow without going too deep into every advanced option.
 
-| Setting | Description |
-|---------|-------------|
-| Auto-join on snipe | Automatically open Roblox when a link is detected |
-| Close Roblox before joining | Force-close any running Roblox instance first |
-| Join delay (ms) | Wait before joining. `0` = instant |
-| Auto-pause after snipe | Pause scanning for N seconds after a snipe fires |
-| When biome ends | Action when biome watcher detects the biome ended: Do nothing / Close Roblox / Return to home |
+### 1. Get Your Discord Token
 
-> **Return to home** kills the game and reopens the Roblox launcher to the home screen — faster for repeated sniping since the launcher stays loaded.
+Using an alternate account is strongly recommended.
 
-### Cooldown
+1. Open https://discord.com/app in your browser.
+2. Log in to the Discord account that the sniper will use.
+3. Press `F12`.
+4. Open the **Network** tab.
+5. Type `science` in the request filter.
+6. Click one of the requests that appears.
+7. Look in **Request Headers** for `Authorization`.
+8. Copy the full value.
+9. Paste it into **Settings > Discord Token** in the app.
 
-| Setting | Description |
-|---------|-------------|
-| Guild cooldown | Ignore all links from the same Discord server for N seconds after a snipe |
-| Profile cooldown | Per-profile cooldown. `0` = disabled |
-| Link cooldown | Ignore the exact same Roblox URI for N seconds |
+If no `science` request appears, change channels in Discord or refresh the page with `Ctrl+R` while DevTools is open.
 
-### Sound Alert
+Do not share this token. Anyone with it can access the account.
 
-Plays a beep when a snipe fires — useful when the app runs in the background.
+### 2. Check Monitored Channels
 
-| Setting | Description |
-|---------|-------------|
-| Enable sound alert on snipe | Toggle the beep on/off |
-| Frequency (Hz) | Pitch of the beep (default 1000 Hz) |
-| Duration (ms) | Length of the beep (default 200 ms) |
+V2 already includes two enabled Sol's RNG channels:
 
-Click **▶ Test Sound** to preview without triggering a snipe. Sound alerts use `winsound` and only work on Windows.
+```text
+1186570213077041233 / 1282542323590496277
+1186570213077041233 / 1282543762425516083
+```
 
-### Extra Discord Tokens
+Open **Channels** and confirm they are enabled.
 
-Add additional Discord account tokens to monitor the same channels simultaneously. Each extra token runs a second gateway in **listen-only mode** — it receives messages and feeds them into the full snipe pipeline, but does not affect the status shown in the dashboard. One primary token is always enough; extra tokens are optional for increased coverage.
+To add another channel:
 
-**To add:** Settings → Extra Discord Tokens → paste token → **+ Add**.
+1. Enable **Developer Mode** in Discord.
+2. Right-click the server icon and choose **Copy Server ID**.
+3. Right-click the channel and choose **Copy Channel ID**.
+4. Paste both IDs into the **Channels** page.
+5. Click **Add Channel**.
 
-You can add and remove extra tokens at any time without restarting.
+The token account must be able to read the channel. If the account cannot access the channel, the sniper cannot see messages from it.
 
-> Using multiple self-bot tokens simultaneously may violate Discord's Terms of Service. Use at your own risk.
+### 3. Enable Profiles
 
-### Notifications
+Profiles decide what counts as a snipe.
 
-Configure desktop toast notifications and Discord webhook delivery for snipe events, biome verification, engine start/stop, and auto-blacklist events.
+Default profile groups:
 
-**Webhook setup:** Discord server → Server Settings → Integrations → Webhooks → New Webhook → copy URL → paste into Settings.
+- **Biomes**: Dreamspace, Cyberspace, Glitched
+- **Merchants**: Mari, Jester, Rin
+- **Items**: Void Coin, Oblivion Potion
+- **System**: Global blacklist terms for bait/fake messages
 
----
+Recommended first setup:
 
-## Dashboard
+1. Open **Profiles**.
+2. Pick a category.
+3. Enable the profiles you care about.
+4. Adjust keywords only if needed.
 
-| Card | What it shows |
-|------|---------------|
-| Snipes | Total snipes this session |
-| Ping | Discord gateway latency (ms) |
-| Status | Engine state (CONNECTING / ON / PAUSED / etc.) |
-| Roblox | Whether Roblox is running |
-| Uptime | Seconds running |
-| Messages | Total messages scanned |
+Biome profiles can use anti-bait biome verification. Item and merchant profiles usually do not need biome verification.
 
----
+### 4. Configure Auto-Join
 
-## Snipe History
+Open **Settings**.
 
-The **History** tab (clock icon in the sidebar) shows a persistent log of every snipe — across sessions. Saved to `snipe_history.json` in the app data folder, survives restarts, keeps up to 500 entries.
+Useful settings:
 
-Each entry shows the profile and keyword that triggered the snipe, the author, a timestamp, the biome verification result (✓ / ✗), a preview of the raw message, and action buttons to **Open in Roblox** or **Jump to Message** in Discord.
+- **Auto-join on snipe**: opens Roblox when a matching link is detected.
+- **Close Roblox before joining**: closes the current Roblox process before joining.
+- **Join delay**: waits before opening the link.
+- **Auto-pause after snipe**: pauses scanning after a successful snipe.
+- **When biome ends**: chooses what the app does after the target biome ends.
 
----
+Recommended starting values:
 
-## Blacklist
+```text
+Auto-join: On
+Close Roblox before joining: Off
+Join delay: 0-500 ms
+Auto-pause after snipe: 15-60 s
+When biome ends: Do nothing or Return to home
+```
 
-Users whose messages are always ignored regardless of keywords.
+### 5. Start the Sniper
 
-**Manual add:** Blacklist page → enter Discord User ID → **+ Add** (username is looked up automatically).
+On the **Home** page:
 
-### Auto-Blacklist on Message Delete
+1. Make sure the token is saved.
+2. Make sure at least one channel is enabled.
+3. Make sure at least one profile is enabled.
+4. Click **Start Sniper**.
 
-Configure an automatic blacklist that triggers when a sniped user deletes their message within a configurable watch window.
-
-This setting is at the bottom of the Blacklist page under **AUTO-BLACKLIST ON MESSAGE DELETE**.
-
-| Setting | Description |
-|---------|-------------|
-| Watch window (seconds) | How long to observe after a snipe. `0` = disabled |
-
-When a deletion is detected within the window, the user is blacklisted automatically and a webhook embed is sent:
-
-> **123456789 (@username)** has been blacklisted for deleting their message.
-
-Recommended value: 30–60 seconds.
-
----
-
-## Logs
-
-Full record of everything the engine processed. Filter by log level with the buttons at the top.
-
-**Dev Mode** (`Ctrl+Shift+D`) enables verbose logging — every message, every filter decision, every link extraction and deduplication step.
+The Home page shows connection status, Discord ping, scanned messages, successful snipes, uptime, and Roblox process status.
 
 ---
 
-## Plugins
+## Discord Webhook
 
-Drop `.py` files into the `plugins/` folder next to the exe, restart, then toggle them in the **Plugins** tab.
+Webhooks are optional. They send Discord embeds when important events happen.
 
-Available hooks:
+Supported events:
 
-| Hook | When it fires |
-|------|--------------|
-| `init(engine, ui)` | Engine starts |
-| `on_start(data)` | Sniper started |
-| `on_stop()` | Sniper stopped |
-| `on_message_matched(data)` | Message passed the profile filter |
-| `on_cooldown_blocked(data)` | Snipe blocked by cooldown |
-| `on_snipe(data)` | Snipe fired — link opened |
-| `on_biome_verified(data)` | Anti-bait confirmed correct biome |
-| `on_biome_left(data)` | Biome watcher: biome ended |
+- Snipe detected
+- Biome verification result
+- Sniper started
+- Sniper stopped
 
-The `on_snipe` payload includes: `author_id`, `author_display`, `author_avatar_url`, `keyword`, `roblox_web_url`, `timestamp_iso`, `jump_url`, and `raw_message`.
+Setup:
+
+1. Open your Discord server settings.
+2. Go to **Integrations > Webhooks**.
+3. Create a webhook.
+4. Copy the webhook URL.
+5. Paste it in **Notifications > Discord Webhook**.
+6. Enable the events you want.
+
+You can also configure a user or role ping. If you use a user/role ID, test the webhook once and confirm the mention is formatted correctly.
+
+Never share the webhook URL. Anyone with it can send messages to that webhook channel.
 
 ---
 
-## Auto-Update
+## Extra Accounts
 
-Every launch checks GitHub for new commits. If outdated, the splash screen shows **"Update found"** and launches `build.bat --update` automatically.
+Extra accounts are additional Discord tokens used only for listening. They can help when one account receives messages slowly or inconsistently.
+
+Recommendations:
+
+- Use an alternate account for the main token.
+- Use extra accounts only if you understand the risk.
+- Do not use accounts you cannot afford to lose.
+
+This is also user-account automation and may cause Discord account restrictions or bans.
 
 ---
 
-## Hotkeys
+## Blacklist and Anti-Bait
 
-Configure global shortcuts in the Dashboard.
+### Blacklist
 
-| Key | Action |
-|-----|--------|
-| Toggle key | Start / stop the sniper |
-| Pause key | Temporarily pause scanning |
+The blacklist blocks specific Discord users from triggering snipes.
+
+You can:
+
+- add users manually;
+- remove users;
+- clear the list;
+- auto-blacklist users who delete a message that triggered a snipe.
+
+### Delete Watch
+
+The **Blacklist** page includes a watch window setting. It controls how long the app watches whether a sniped message gets deleted.
+
+Example:
+
+```text
+Watch window: 30 s
+```
+
+If the author deletes the triggering message during that time, the user is added to the blacklist.
+
+### Biome Verification
+
+For biome profiles, the app can read Roblox logs to verify the actual biome after joining.
+
+If the detected biome does not match the expected biome, the app can close Roblox depending on the profile and **When biome ends** settings.
+
+---
+
+## Where Data Is Stored
+
+User data is stored in:
+
+```text
+%LOCALAPPDATA%\SlaoqSniper\
+```
+
+Common files:
+
+```text
+config.json
+blacklist.json
+snipe_history.json
+logs\
+crash_logs\
+update_temp\
+debug_exports\
+```
+
+These files may contain sensitive information. Do not upload your local data folder.
+
+---
+
+## Updates
+
+V2 updates through GitHub Releases.
+
+Public releases should include:
+
+```text
+SlaoqSniper.exe
+manifest.json
+```
+
+The app checks the manifest, compares versions, downloads the new executable, verifies SHA256, and only then replaces the old file.
 
 ---
 
 ## Troubleshooting
 
-**"Token not configured"** — paste your Discord token in Settings.
+### The app opens, but nothing is detected
 
-**"No monitored channels"** — add at least one channel in Settings.
+Check:
 
-**Sniper connects but nothing snipes** — check the Logs page for `[FILTER]` lines:
-- `global blacklist keyword 'X'` — a global blacklist word matched the message
-- `no profile trigger matched` — no profile keyword found in the message
-- `[COOLDOWN] Blocked` — cooldown is active, lower the values or wait
+- the Discord token is saved;
+- the token account is in the server;
+- the token account can read the monitored channels;
+- channels are enabled in **Channels**;
+- at least one profile is enabled;
+- logs are not showing cooldown, blacklist, or filter mismatch messages.
 
-**Joins wrong server / gets kicked instantly** — enable **Close Roblox before joining**.
+### Invalid token
 
-**Sound alert not working** — `winsound` is Windows-only. Check system volume.
+Get the token again from the browser. Tokens can stop working after logging out, changing password, or Discord invalidating the session.
 
-**History tab empty after reinstall** — history is in `%LOCALAPPDATA%\SlaoqSniper\snipe_history.json`.
+### Roblox does not open
 
-**Build fails — Python not found** — reinstall Python and tick **"Add Python to PATH"**.
+Check:
 
-**Build fails — clone failed** — run `git clone https://github.com/gustaslaoq/Sols-RNG-Sniper.git` in cmd first to cache credentials.
+- Roblox is installed;
+- `roblox://` links work on Windows;
+- Auto-join is enabled;
+- antivirus/security tools are not blocking the app.
+
+### The sniper joins the wrong biome
+
+Enable biome verification for biome profiles and check the wrong-biome action settings.
+
+### Webhook does not send
+
+Check:
+
+- the webhook URL is correct;
+- the webhook still exists in Discord;
+- the event is enabled in the app;
+- the webhook channel allows messages.
+
+### Config reset or disappeared
+
+Check:
+
+```text
+%LOCALAPPDATA%\SlaoqSniper\
+```
+
+If `config.json.corrupt` exists, the app found invalid JSON and reset to defaults.
 
 ---
 
-## Disclaimer
+## For Developers
 
-This software uses a Discord user account token to automate message monitoring. This may violate Discord's Terms of Service. Use at your own risk. The authors are not responsible for any account actions taken by Discord.
+Normal users do not need this section.
+
+Development install:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+Run from source:
+
+```powershell
+.\.venv\Scripts\python.exe main.py
+```
+
+Build the executable:
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --clean --onefile --noconsole --name SlaoqSniper --icon assets\app_icon.ico --paths . --add-data "assets;assets" main.py
+```
+
+Generate a release manifest:
+
+```powershell
+.\.venv\Scripts\python.exe .\release\make_manifest.py --version 2.0.0 --exe .\dist\SlaoqSniper.exe --output .\manifest.json --notes-file .\release-notes.txt
+```
+
+Main public source layout:
+
+```text
+main.py
+sniper_engine.py
+slaoq_sniper_v2/
+release/
+assets/
+requirements.txt
+requirements-dev.txt
+readme.md
+```
+
+Do not commit user configs, logs, `.exe` files, `.venv`, `dist`, `build`, or local planning notes.
+
+---
+
+## Final Disclaimer
+
+This project automates message monitoring through a Discord user token. This may violate Discord's Terms of Service and may result in account restrictions or bans.
+
+Use it responsibly, preferably with an alternate account, and never share tokens, webhooks, sensitive logs, or private server links.
 
 ---
 
 ## Credits
 
-Inspired by [Sol Sniper V3](https://github.com/vexsyx/sniper-v3) by vexsyx.
+Inspired by earlier Sol's RNG sniper projects and rebuilt in V2 as a single-executable Windows app with a new UI, updater, history, blacklist, webhooks, and configurable profiles.

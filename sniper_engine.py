@@ -4,17 +4,14 @@ import asyncio
 import json
 import logging
 import os
-import platform
 import random
 import re
 import shutil
-import subprocess
-import sys
 import threading
 import time
 from collections import deque, OrderedDict
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Any
@@ -23,6 +20,11 @@ import aiohttp
 import psutil
 
 logger = logging.getLogger("sniper_engine")
+
+try:
+    from slaoq_sniper_v2.app_info import APP_VERSION
+except Exception:
+    APP_VERSION = "2.0.0"
 
 
 class EngineStatus(Enum):
@@ -43,20 +45,15 @@ class LogLevel(Enum):
 
 
 DISCORD_GATEWAY_URL  = "wss://gateway.discord.gg/?v=10&encoding=json"
-DISCORD_API_BASE     = "https://discord.com/api/v10"
 LINK_RESOLVE_TIMEOUT = aiohttp.ClientTimeout(total=6, connect=3)
 HTTP_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
+WEBHOOK_LOGO_URL     = "https://cdn.discordapp.com/attachments/1341185707615719495/1481822728020295760/S7nWcFz.png"
 ROBLOX_PROCESS_NAMES = {"RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Windows10Universal.exe",
                         "RobloxPlayer", "Roblox"}
 
-_PLATFORM = platform.system()
-if _PLATFORM == "Windows":
-    ROBLOX_LOG_PATH = Path(os.getenv("LOCALAPPDATA", "")) / "Roblox" / "logs"
-elif _PLATFORM == "Darwin":
-    ROBLOX_LOG_PATH = Path.home() / "Library" / "Logs" / "Roblox"
-else:  # Linux (via Wine or native client)
-    ROBLOX_LOG_PATH = Path.home() / ".local" / "share" / "roblox" / "logs"
-LOG_TAIL_BYTES       = 131072  # 128 KB
+LOCAL_APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+ROBLOX_LOG_PATH = LOCAL_APP_DATA / "Roblox" / "logs"
+LOG_TAIL_BYTES       = 131072
 
 
 class _Patterns:
@@ -80,13 +77,6 @@ class _Patterns:
         r"https?://(?:rb\.gy|bit\.ly|tinyurl\.com|t\.co|discord\.gg|discord\.com/invite|isgd\.it|cutt\.ly)/[\w/-]+",
         re.IGNORECASE)
 
-BIOME_PATTERNS = [
-    re.compile(r"'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
-    re.compile(r'"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
-    re.compile(r"'largeImage'\s*:\s*\{[^}]*'hoverText'\s*:\s*'([^']+)'", re.IGNORECASE),
-    re.compile(r'"largeImage"\s*:\s*\{[^}]*"hoverText"\s*:\s*"([^"]+)"', re.IGNORECASE),
-]
-
 BIOME_IGNORE = frozenset([
     "SOL'S RNG", "ROBLOX", "RO BLOX",
 ])
@@ -96,88 +86,29 @@ PATTERNS = _Patterns()
 
 
 def play_sound(freq: int = 1000, duration_ms: int = 200, filepath: str = "") -> None:
-    """Play a sound alert in a fire-and-forget manner.
-
-    Priority order:
-      1. If *filepath* is given and the file exists → play via platform player.
-      2. Otherwise → synthesised beep (winsound on Windows, afplay/paplay/aplay on others).
-    """
-    system = platform.system()
-
     if filepath and Path(filepath).exists():
         try:
-            if system == "Windows":
-                import ctypes
-                fp = str(Path(filepath).resolve())
-                alias = f"snipersound_{int(time.monotonic())}"
-                cmd_open = f'open "{fp}" type mpegvideo alias {alias}'
-                cmd_play = f"play {alias}"
-                ctypes.windll.winmm.mciSendStringW(cmd_open, None, 0, None)
-                ctypes.windll.winmm.mciSendStringW(cmd_play, None, 0, None)
-            elif system == "Darwin":
-                subprocess.Popen(["afplay", filepath],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                for cmd in (["paplay", filepath], ["aplay", filepath]):
-                    try:
-                        subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL)
-                        break
-                    except FileNotFoundError:
-                        continue
+            import ctypes
+
+            fp = str(Path(filepath).resolve())
+            alias = f"snipersound_{int(time.monotonic())}"
+            cmd_open = f'open "{fp}" type mpegvideo alias {alias}'
+            cmd_play = f"play {alias}"
+            ctypes.windll.winmm.mciSendStringW(cmd_open, None, 0, None)
+            ctypes.windll.winmm.mciSendStringW(cmd_play, None, 0, None)
         except Exception:
             pass
         return
     try:
-        if system == "Windows":
-            import winsound
-            winsound.Beep(max(37, min(32767, freq)), max(1, duration_ms))
-        elif system == "Darwin":
-            # Generate a raw PCM beep and pipe it to afplay
-            import math, struct
-            rate    = 44100
-            samples = int(rate * duration_ms / 1000)
-            data    = b"".join(
-                struct.pack("<h", int(32767 * math.sin(2 * math.pi * freq * t / rate)))
-                for t in range(samples)
-            )
-            proc = subprocess.Popen(
-                ["afplay", "-f", "AIFF", "-r", str(rate), "-c", "1", "-b", "16", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            proc.stdin.write(data)
-            proc.stdin.close()
-        else:
-            # Linux: try speaker-test beep via paplay with /dev/urandom fallback
-            try:
-                import math, struct
-                rate    = 44100
-                samples = int(rate * duration_ms / 1000)
-                data    = b"".join(
-                    struct.pack("<h", int(32767 * math.sin(2 * math.pi * freq * t / rate)))
-                    for t in range(samples)
-                )
-                proc = subprocess.Popen(
-                    ["paplay", "--raw", "--format=s16le",
-                     f"--rate={rate}", "--channels=1"],
-                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL)
-                proc.stdin.write(data)
-                proc.stdin.close()
-            except (FileNotFoundError, OSError):
-                subprocess.Popen(
-                    ["aplay", "-q", "-f", "S16_LE", "-r", str(rate), "-c", "1", "-"],
-                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL).stdin.write(data)
+        import winsound
+
+        winsound.Beep(max(37, min(32767, freq)), max(1, duration_ms))
     except Exception:
         pass
 
 
 def get_app_dir() -> Path:
-    """Single canonical app directory — LOCALAPPDATA/SlaoqSniper on Windows."""
-    if sys.platform == "win32":
-        base = Path(os.getenv("LOCALAPPDATA", "")) / "SlaoqSniper"
-    else:
-        base = Path.home() / ".config" / "slaoq-sniper"
+    base = LOCAL_APP_DATA / "SlaoqSniper"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -188,12 +119,6 @@ def get_log_path() -> Path:
     p = get_app_dir() / "logs"
     p.mkdir(parents=True, exist_ok=True)
     return p / "sniper.log"
-
-def get_crash_log_dir() -> Path:
-    p = get_app_dir() / "crash_logs"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
 
 @dataclass
 class ChannelConfig:
@@ -213,9 +138,9 @@ class SnipeProfile:
     blacklist_keywords:  list      = field(default_factory=list)
     verify_biome_name:   str       = ""
     kill_on_wrong_biome: bool      = True
-    priority:            int       = 0       # lower number = evaluated first; 0 = default
-    bypass_cooldown:     bool      = False   # priority profiles can skip cooldowns
-    sound_alert_path:    str       = ""      # custom audio file per profile (empty = global beep)
+    priority:            int       = 0
+    bypass_cooldown:     bool      = False
+    sound_alert_path:    str       = ""
     _compiled_triggers:  list      = field(default_factory=list, repr=False, compare=False)
     _compiled_blacklist: list      = field(default_factory=list, repr=False, compare=False)
     _patterns_dirty:     bool      = field(default=True,         repr=False, compare=False)
@@ -248,7 +173,7 @@ class SnipeProfile:
         if self._patterns_dirty:
             self.compile()
         if not self._compiled_triggers:
-            return True  # empty trigger list → accept everything
+            return True
         return any(p.search(text) for p in self._compiled_triggers)
 
     def matches_blacklist(self, text: str) -> bool:
@@ -312,7 +237,6 @@ def _default_profiles() -> list:
         p.compile()
         profiles.append(p)
 
-    # ── Merchant item profiles (disabled by default) ──────────────────────
     for name, biome, triggers in [
         ("Void Coin",  "",  ["void", "vc"]),
         ("Jester",     "",  ["jester", "js", "obl", "oblivion", "heavenly", "hp", "obliv"]),
@@ -329,9 +253,25 @@ def _default_profiles() -> list:
     return profiles
 
 
+def _default_channels() -> list:
+    return [
+        ChannelConfig(
+            guild_id="1186570213077041233",
+            channel_id="1282542323590496277",
+            name="Sol's RNG > #1282542323590496277",
+            enabled=True,
+        ),
+        ChannelConfig(
+            guild_id="1186570213077041233",
+            channel_id="1282543762425516083",
+            name="Sol's RNG > #1282543762425516083",
+            enabled=True,
+        ),
+    ]
+
+
 @dataclass
 class WebhookConfig:
-    """Discord webhook configuration for event notifications."""
     url:          str  = ""
     enabled:      bool = False
     on_snipe:     bool = True
@@ -352,40 +292,28 @@ class WebhookConfig:
 @dataclass
 class SniperConfig:
     token:                   str           = ""
-    monitored_channels:      list          = field(default_factory=list)
+    monitored_channels:      list          = field(default_factory=_default_channels)
     profiles:                list          = field(default_factory=_default_profiles)
-    auto_play_enabled:       bool          = False
-    auto_play_fullscreen:    bool          = False
     auto_join_enabled:       bool          = True
     auto_join_delay_ms:      int           = 0
-    pause_after_snipe_s:     int           = 0       # 0 = disabled
+    pause_after_snipe_s:     int           = 0
     close_roblox_before_join: bool          = False
-    biome_leave_action:      str           = "none"  # "none" | "kill" | "home"
+    biome_leave_action:      str           = "none"
     anti_bait_enabled:       bool          = True
     link_resolve_enabled:    bool          = True
     log_tail_bytes:          int           = LOG_TAIL_BYTES
     dev_mode:                bool          = False
     log_to_file:             bool          = False
     theme:                   str           = "dark"
-    hotkey_toggle_key:       str           = ""
-    hotkey_toggle_en:        bool          = False
-    hotkey_pause_key:        str           = ""
-    hotkey_pause_en:         bool          = False
-    hotkey_pause_dur:        int           = 60
     webhook:                 WebhookConfig = field(default_factory=WebhookConfig)
-    # Cooldown config (optional — loaded from "cooldown" key in config.json)
     cooldown_guild_ttl:      float         = 30.0
     cooldown_profile_ttl:    float         = 0.0
     cooldown_link_ttl:       float         = 10.0
-    # Sound alert
     sound_alert_enabled:     bool          = False
     sound_alert_freq:        int           = 1000
     sound_alert_dur_ms:      int           = 200
-    # Delete-watch auto-blacklist (0 = disabled)
     delete_watch_seconds:    int           = 0
-    # Extra Discord tokens (optional, listen-only secondary accounts)
     extra_tokens:            list          = field(default_factory=list)
-    # Internal — not serialised
     config_path:             str           = field(default="", repr=False, compare=False)
 
     def __post_init__(self):
@@ -402,8 +330,6 @@ class SniperConfig:
             "token":                    self.token,
             "monitored_channels":       [asdict(c) for c in self.monitored_channels],
             "profiles":                 [p.to_dict() for p in self.profiles],
-            "auto_play_enabled":        self.auto_play_enabled,
-            "auto_play_fullscreen":     self.auto_play_fullscreen,
             "auto_join_enabled":        self.auto_join_enabled,
             "auto_join_delay_ms":       self.auto_join_delay_ms,
             "pause_after_snipe_s":      self.pause_after_snipe_s,
@@ -415,11 +341,6 @@ class SniperConfig:
             "dev_mode":                 self.dev_mode,
             "log_to_file":              self.log_to_file,
             "theme":                    self.theme,
-            "hotkey_toggle_key":        self.hotkey_toggle_key,
-            "hotkey_toggle_en":         self.hotkey_toggle_en,
-            "hotkey_pause_key":         self.hotkey_pause_key,
-            "hotkey_pause_en":          self.hotkey_pause_en,
-            "hotkey_pause_dur":         self.hotkey_pause_dur,
             "webhook":                  self.webhook.to_dict(),
             "cooldown": {
                 "guild_ttl":   self.cooldown_guild_ttl,
@@ -538,28 +459,6 @@ class ProcessManager:
         return False
 
     @staticmethod
-    def is_in_game() -> bool:
-        if not ProcessManager.is_roblox_running():
-            return False
-        try:
-            for proc in psutil.process_iter(["name", "cmdline"]):
-                try:
-                    if proc.info["name"] not in ROBLOX_PROCESS_NAMES:
-                        continue
-                    cmdline = " ".join(proc.info.get("cmdline") or [])
-                    if any(k in cmdline for k in (
-                        "placeId=", "gameInstanceId",
-                        "privateServerLinkCode", "launchMode=play",
-                        "browsertrackerid",
-                    )):
-                        return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-        except Exception:
-            pass
-        return False
-
-    @staticmethod
     def has_active_logs() -> bool:
         if not ROBLOX_LOG_PATH.exists():
             return False
@@ -582,190 +481,14 @@ class ProcessManager:
     @staticmethod
     def open_roblox_link(uri: str):
         try:
-            system = platform.system()
-            if system == "Windows":
-                os.startfile(uri)
-            elif system == "Darwin":
-                subprocess.Popen(["open", uri])
-            else:
-                subprocess.Popen(["xdg-open", uri])
+            os.startfile(uri)
             logger.info("Opened Roblox URI: %s", uri[:80])
         except Exception as exc:
             logger.error("Failed to open Roblox link %r: %s", uri[:80], exc)
 
-    @staticmethod
-    def restart_roblox(delay: float = 1.0):
-        """Kill all Roblox instances and re-launch the launcher after a short delay."""
-        ProcessManager.kill_roblox_and_wait(timeout=6.0)
-        time.sleep(delay)
-        try:
-            system = platform.system()
-            if system == "Windows":
-                os.startfile("roblox://")
-            elif system == "Darwin":
-                subprocess.Popen(["open", "roblox://"])
-            else:
-                subprocess.Popen(["xdg-open", "roblox://"])
-        except Exception as exc:
-            logger.error("Failed to restart Roblox: %s", exc)
-
-
-class AutoPlayManager:
-    POLL_INTERVAL = 0.35
-    MAX_WAIT      = 50.0
-    FOCUS_WAIT    = 2.5
-
-    def __init__(self, cfg: "SniperConfig", log_fn: Callable):
-        self._cfg    = cfg
-        self._log    = log_fn
-        self._active = False
-
-    def trigger(self):
-        if self._active:
-            return
-        threading.Thread(target=self._run, daemon=True, name="AutoPlay").start()
-
-    def _run(self):
-        self._active = True
-        try:
-            self._focus_roblox()
-            if getattr(self._cfg, "auto_play_fullscreen", False):
-                self._send_fullscreen()
-            found = self._wait_for_play_button()
-            if found:
-                self._log(LogLevel.INFO, f"[AUTO-PLAY] PLAY button found — clicking.")
-                self._click(found)
-            else:
-                self._log(LogLevel.WARN, "[AUTO-PLAY] PLAY button not found within timeout.")
-        except Exception as exc:
-            self._log(LogLevel.ERROR, f"[AUTO-PLAY] Unexpected error: {exc}")
-        finally:
-            self._active = False
-
-    def _focus_roblox(self):
-        if sys.platform != "win32":
-            return
-        try:
-            import ctypes, ctypes.wintypes as wt
-            user32       = ctypes.windll.user32
-            hwnd_found   = []
-
-            @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
-            def _cb(hwnd, _):
-                if not user32.IsWindowVisible(hwnd):
-                    return True
-                buf = ctypes.create_unicode_buffer(256)
-                user32.GetWindowTextW(hwnd, buf, 256)
-                t = buf.value.lower()
-                if "roblox" in t and "studio" not in t:
-                    hwnd_found.append(hwnd)
-                return True
-
-            user32.EnumWindows(_cb, 0)
-            if hwnd_found:
-                hwnd = hwnd_found[0]
-                user32.ShowWindow(hwnd, 9)
-                user32.SetForegroundWindow(hwnd)
-                time.sleep(0.5)
-                self._log(LogLevel.INFO, "[AUTO-PLAY] Roblox focused.")
-        except Exception as exc:
-            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] Focus failed: {exc}")
-
-    def _send_fullscreen(self):
-        try:
-            import keyboard
-            time.sleep(0.3)
-            keyboard.send("f11")
-            time.sleep(0.8)
-            self._log(LogLevel.INFO, "[AUTO-PLAY] Sent F11 for fullscreen.")
-        except Exception as exc:
-            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] F11 failed: {exc}")
-
-    def _grab_screen(self):
-        try:
-            import mss
-            with mss.mss() as sct:
-                mon = sct.monitors[1]
-                img = sct.grab(mon)
-                return img
-        except ImportError:
-            self._log(LogLevel.WARN, "[AUTO-PLAY] mss not installed — run: pip install mss")
-        except Exception as exc:
-            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] Screenshot failed: {exc}")
-        return None
-
-    def _detect_play(self):
-        img = self._grab_screen()
-        if img is None:
-            return None
-        try:
-            import pytesseract
-            from PIL import Image as PILImage
-            pil = PILImage.frombytes("RGB", img.size, img.rgb)
-            w, h = pil.size
-            crop_l = int(w * 0.25)
-            crop_r = int(w * 0.75)
-            crop_t = int(h * 0.50)
-            crop_b = int(h * 0.95)
-            region = pil.crop((crop_l, crop_t, crop_r, crop_b))
-            region = region.resize((region.width * 2, region.height * 2),
-                                   PILImage.LANCZOS)
-            data = pytesseract.image_to_data(
-                region,
-                output_type=pytesseract.Output.DICT,
-                config="--psm 11 --oem 3 -c tessedit_char_whitelist=PLAYplay",
-            )
-            for i, text in enumerate(data["text"]):
-                if text.strip().upper() == "PLAY":
-                    conf = int(data["conf"][i])
-                    if conf < 40:
-                        continue
-                    rx = data["left"][i] + data["width"][i] // 2
-                    ry = data["top"][i]  + data["height"][i] // 2
-                    scale = 0.5
-                    abs_x = crop_l + int(rx * scale)
-                    abs_y = crop_t + int(ry * scale)
-                    return (abs_x, abs_y)
-        except ImportError:
-            self._log(LogLevel.WARN,
-                "[AUTO-PLAY] pytesseract or Pillow not installed — "
-                "run: pip install pytesseract pillow  and install Tesseract from "
-                "https://github.com/UB-Mannheim/tesseract/wiki")
-        except Exception as exc:
-            self._log(LogLevel.DEBUG, f"[AUTO-PLAY] OCR error: {exc}")
-        return None
-
-    def _wait_for_play_button(self):
-        self._log(LogLevel.INFO, "[AUTO-PLAY] Waiting for game to load…")
-        time.sleep(self.FOCUS_WAIT)
-        deadline = time.monotonic() + self.MAX_WAIT
-        attempt  = 0
-        while time.monotonic() < deadline:
-            attempt += 1
-            result = self._detect_play()
-            if result:
-                return result
-            time.sleep(self.POLL_INTERVAL)
-        return None
-
-    def _click(self, pos):
-        cx, cy = pos
-        try:
-            import pyautogui
-            pyautogui.moveTo(cx, cy, duration=0.1)
-            pyautogui.click()
-            self._log(LogLevel.INFO, f"[AUTO-PLAY] Clicked PLAY at ({cx}, {cy}).")
-        except ImportError:
-            self._log(LogLevel.WARN,
-                "[AUTO-PLAY] pyautogui not installed — run: pip install pyautogui")
-        except Exception as exc:
-            self._log(LogLevel.ERROR, f"[AUTO-PLAY] Click failed: {exc}")
-
 
 
 class RobloxLogReader:
-
-    _BIOME_WORD_RE: dict = {}
 
     _HOVER_IGNORE = BIOME_IGNORE | frozenset([""])
 
@@ -823,10 +546,6 @@ class RobloxLogReader:
         stat_map.sort(key=lambda x: x[1], reverse=True)
         return stat_map[0][0]
 
-    def _force_refresh_log(self):
-        self._session_log = None
-
-
     def _parse_biome_from_line(self, line: str) -> Optional[str]:
         if "BloxstrapRPC" not in line or "SetRichPresence" not in line:
             return None
@@ -852,7 +571,6 @@ class RobloxLogReader:
 
 
     def _scan_buffer(self, text: str) -> Optional[str]:
-        """Scan a text buffer line-by-line and return the *last* biome found."""
         last_biome: Optional[str] = None
         for line in text.splitlines():
             found = self._parse_biome_from_line(line)
@@ -925,7 +643,6 @@ class RobloxLogReader:
                     if old:
                         self._seek_pos.pop(old, None)
                         self._read_buf.pop(old, None)
-                    # keep _last_known_biome until the new log overwrites it.
                     self._session_log = newer
                     self._seek_pos[newer] = 0
                     self._read_buf[newer] = ""
@@ -980,7 +697,6 @@ class RobloxLogReader:
         return None
 
     def debug_biome_detection(self) -> str:
-        """Debug - retorna info sobre detecção de bioma"""
         path = self._session_log or self._find_session_log()
         if not path:
             return f"No log file. _session_log={self._session_log}, _last_known={self._last_known_biome}"
@@ -990,8 +706,6 @@ class RobloxLogReader:
         found = self._scan_buffer(buf)
         
         return f"log={path.name}, buf_len={len(buf)}, found={found}, last_known={self._last_known_biome}"
-
-# LINK RESOLVER
 
 class LinkResolver:
     _CACHE_MAX = 512   # LRU cache — 512 resolved URLs
@@ -1077,7 +791,6 @@ class ProfileFilter:
         )
 
     def _global_blocked(self, clean: str):
-        """Return (blocked: bool, hit_keyword: str)."""
         global_p = next((p for p in self._cfg.profiles if p.locked), None)
         if global_p and global_p.enabled and global_p.matches_blacklist(clean):
             hit = next(
@@ -1089,7 +802,6 @@ class ProfileFilter:
         return False, ""
 
     def _match_profile(self, clean: str) -> tuple:
-        """Return (matched_profile_or_None, reject_reason_str)."""
         blocked, kw = self._global_blocked(clean)
         if blocked:
             return None, f"global blacklist keyword '{kw}'"
@@ -1122,23 +834,30 @@ class ProfileFilter:
 class DiscordGateway:
     def __init__(self, token: str, on_message: Callable, on_log: Callable,
                  on_status: Callable, config: SniperConfig,
-                 on_message_delete: Callable = None):
+                 on_message_delete: Callable = None,
+                 label: str = "primary",
+                 poll_fallback: bool = False):
         self.token      = token
         self.on_message = on_message
         self.on_log     = on_log
         self.on_status  = on_status
         self.config     = config
         self.on_message_delete = on_message_delete
+        self.label = label
+        self.poll_fallback = poll_fallback
 
         self._ws:                 Optional[aiohttp.ClientWebSocketResponse] = None
         self._session:            Optional[aiohttp.ClientSession]           = None
         self._heartbeat_task:     Optional[asyncio.Task]                    = None
+        self._poll_task:          Optional[asyncio.Task]                    = None
         self._sequence:           Optional[int]                             = None
         self._session_id:         Optional[str]                             = None
         self._resume_gateway_url: str                                       = DISCORD_GATEWAY_URL
         self._ping_ms:            float                                     = 0.0
         self._running:            bool                                      = False
         self._last_hb:            float                                     = 0.0
+        self._event_tasks:        set[asyncio.Task]                         = set()
+        self._poll_seen:          dict[str, str]                             = {}
 
     @property
     def ping_ms(self) -> float:
@@ -1147,7 +866,7 @@ class DiscordGateway:
     async def connect(self):
         self._running = True
         self.on_status(EngineStatus.CONNECTING)
-        self.on_log(LogEntry(LogLevel.INFO, "Connecting to Discord Gateway…"))
+        self.on_log(LogEntry(LogLevel.INFO, f"Connecting to Discord Gateway ({self.label})…"))
         connector = aiohttp.TCPConnector(
             limit=20, ttl_dns_cache=300, use_dns_cache=True, keepalive_timeout=60)
         self._session = aiohttp.ClientSession(
@@ -1158,6 +877,8 @@ class DiscordGateway:
             },
             timeout=HTTP_REQUEST_TIMEOUT)
         try:
+            if self.poll_fallback:
+                self._poll_task = asyncio.create_task(self._poll_loop(), name=f"{self.label}_poll")
             await self._gateway_loop()
         finally:
             await self._cleanup()
@@ -1189,6 +910,62 @@ class DiscordGateway:
                 await self._dispatch(json.loads(msg.data))
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break
+
+    async def _poll_loop(self):
+        await asyncio.sleep(3.0)
+        while self._running and self._session and not self._session.closed:
+            channels = [c.channel_id for c in self.config.monitored_channels if c.enabled and c.channel_id]
+            for channel_id in channels:
+                try:
+                    await self._poll_channel(channel_id)
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    self.on_log(LogEntry(
+                        LogLevel.DEBUG,
+                        f"[EXTRA] Poll failed for channel {channel_id}: {exc}",
+                    ))
+            await asyncio.sleep(2.0)
+
+    async def _poll_channel(self, channel_id: str):
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=3"
+        async with self._session.get(url) as response:
+            if response.status in {401, 403, 404}:
+                return
+            if response.status == 429:
+                retry_after = 2.0
+                try:
+                    body = await response.json()
+                    retry_after = float(body.get("retry_after", retry_after))
+                except Exception:
+                    pass
+                await asyncio.sleep(min(max(retry_after, 1.0), 8.0))
+                return
+            if response.status != 200:
+                return
+            messages = await response.json()
+
+        if not isinstance(messages, list) or not messages:
+            return
+        latest_id = str(messages[0].get("id", ""))
+        previous_id = self._poll_seen.get(channel_id)
+        self._poll_seen[channel_id] = latest_id
+        if previous_id is None:
+            return
+
+        fresh = []
+        for message in messages:
+            msg_id = str(message.get("id", ""))
+            if not msg_id or msg_id == previous_id:
+                break
+            fresh.append(message)
+
+        for message in reversed(fresh):
+            self.on_log(LogEntry(
+                LogLevel.DEBUG,
+                f"[EXTRA] Polled message from channel {channel_id}",
+            ))
+            await self._on_message(message)
 
     async def _dispatch(self, payload: dict):
         op = payload.get("op")
@@ -1230,12 +1007,11 @@ class DiscordGateway:
                 self.on_status(EngineStatus.CONNECTED)
                 self.on_log(LogEntry(LogLevel.SUCCESS, "Session resumed — no messages lost."))
             elif t == "MESSAGE_CREATE":
-                asyncio.create_task(self._on_message(d))
+                self._spawn_event_task(self._on_message(d), "message_create")
             elif t == "MESSAGE_UPDATE":
-                # Some bots edit messages to add the link after posting
-                asyncio.create_task(self._on_message(d, is_update=True))
+                self._spawn_event_task(self._on_message(d, is_update=True), "message_update")
             elif t == "MESSAGE_DELETE":
-                asyncio.create_task(self._on_message_delete(d))
+                self._spawn_event_task(self._on_message_delete(d), "message_delete")
 
         elif op == 7:
             self.on_log(LogEntry(LogLevel.WARN, "Reconnect requested by server."))
@@ -1251,11 +1027,9 @@ class DiscordGateway:
                 await self._ws.close()
 
     async def _identify(self):
-        _os_map = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}
-        os_str  = _os_map.get(platform.system(), "linux")
         await self._ws.send_json({"op": 2, "d": {
             "token": self.token,
-            "properties": {"os": os_str, "browser": "Discord Client", "device": ""},
+            "properties": {"os": "windows", "browser": "Discord Client", "device": ""},
             "presence": {"status": "online", "afk": False},
         }})
 
@@ -1280,44 +1054,31 @@ class DiscordGateway:
             except (aiohttp.ClientError, asyncio.CancelledError):
                 break
 
+    def _spawn_event_task(self, coro, name: str) -> None:
+        task = asyncio.create_task(coro, name=name)
+        self._event_tasks.add(task)
+        task.add_done_callback(self._on_event_task_done)
+
+    def _on_event_task_done(self, task: asyncio.Task) -> None:
+        self._event_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            try:
+                self.on_log(LogEntry(LogLevel.ERROR, f"Discord event task failed: {exc}"))
+            except Exception:
+                logger.exception("Discord event task failed: %s", exc)
+
     async def _on_message(self, data: dict, is_update: bool = False):
-        ch      = data.get("channel_id", "").strip()
-        guild   = data.get("guild_id",   "").strip()
-        msg_id  = data.get("id",         "").strip()
+        ch      = str(data.get("channel_id") or "").strip()
+        guild   = str(data.get("guild_id") or "").strip()
+        msg_id  = str(data.get("id") or "").strip()
         content = data.get("content",    "")
-        author  = data.get("author",     {})
-
-        embed_parts = []
-        for embed in data.get("embeds", []):
-            if not isinstance(embed, dict):
-                continue
-            for key in ("title", "description"):
-                if key in embed:
-                    embed_parts.append(embed[key])
-            for fld in embed.get("fields", []):
-                if "value" in fld:
-                    embed_parts.append(fld["value"])
-
-        component_buttons = []
-        for component in data.get("components", []):
-            if not isinstance(component, dict):
-                continue
-            for item in component.get("components", []):
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == 2:
-                    btn_label = item.get("label", "")
-                    btn_url = item.get("url", "")
-                    if btn_label:
-                        component_buttons.append((btn_label, btn_url))
-
-        component_parts = [b[0] for b in component_buttons]
-        if component_buttons:
-            for btn in component_buttons:
-                if btn[1]:
-                    component_parts.append(btn[1])
-
-        full_content = f"{content} {' '.join(embed_parts)} {' '.join(component_parts)}".strip()
+        author  = data.get("author") or {}
 
         embed_parts = []
         for embed in data.get("embeds", []):
@@ -1367,22 +1128,19 @@ class DiscordGateway:
         if not monitored:
             return
 
-        self.on_log(LogEntry(LogLevel.DEBUG,
-            f"[MSG{'_UPDATE' if is_update else ''}] #{ch} | {astr}: {content[:80]}",
-            dev_only=True))
-
         await self.on_message(
             guild, ch, msg_id, content, astr, full_content,
             author_id=author_id,
             author_avatar_url=author_avatar_url,
             author_display=author_display,
             buttons=component_buttons if component_buttons else None,
+            is_update=is_update,
         )
 
     async def _on_message_delete(self, data: dict):
-        ch      = data.get("channel_id", "").strip()
-        msg_id  = data.get("id",         "").strip()
-        guild   = data.get("guild_id",   "").strip()
+        ch      = str(data.get("channel_id") or "").strip()
+        msg_id  = str(data.get("id") or "").strip()
+        guild   = str(data.get("guild_id") or "").strip()
         monitored = any(
             c.channel_id == ch and c.enabled for c in self.config.monitored_channels)
         if not monitored:
@@ -1394,19 +1152,29 @@ class DiscordGateway:
         self._running = False
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._poll_task:
+            self._poll_task.cancel()
+        for task in list(self._event_tasks):
+            task.cancel()
+        if self._event_tasks:
+            await asyncio.gather(*self._event_tasks, return_exceptions=True)
+            self._event_tasks.clear()
         if self._ws and not self._ws.closed:
             await self._ws.close()
 
     async def _cleanup(self):
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
         if self._session and not self._session.closed:
             await self._session.close()
 
 class SniperEngine:
-
-    # TTL constants (seconds)
-    _SERVER_DEDUP_TTL  = 10.0   # ignore same server link within 10s
-    _PAUSE_AFTER_SNIPE = 0       # overridden from config
-    # Message ID dedup buffer capacity
+    _SERVER_DEDUP_TTL  = 10.0
     _MSG_DEDUP_SIZE    = 200
 
     def __init__(
@@ -1414,11 +1182,11 @@ class SniperEngine:
         config:    SniperConfig,
         blacklist: Any = None,   # BlacklistManager instance (injected from main.py)
         cooldown:  Any = None,   # CooldownManager  instance (injected from main.py)
-        plugins:   Any = None,   # PluginLoader     instance (injected from main.py)
     ):
         self.config = config
 
         self._gateway:  Optional[DiscordGateway] = None
+        self._extra_gateways: dict[str, DiscordGateway] = {}
         self._resolver: Optional[LinkResolver]   = None
         self._filter:   Optional[ProfileFilter]  = None
 
@@ -1427,40 +1195,32 @@ class SniperEngine:
         self._running:  bool                            = False
         self._paused:   bool                            = False
         self._start_ts: float                           = 0.0
+        self._paused_total: float                       = 0.0
+        self._pause_started_at: float                   = 0.0
+        self._auto_pause_task: Optional[asyncio.Task]   = None
 
         self._log_reader  = RobloxLogReader(config.log_tail_bytes)
         self._snipe_count = 0
 
-        # metrics
         self.metrics: dict = {
             "messages_scanned":  0,
             "links_detected":    0,
             "snipes_successful": 0,
-            "webhooks_sent":     0,
         }
 
-        # message ID dedup buffer
         self._seen_msg_ids: deque = deque(maxlen=self._MSG_DEDUP_SIZE)
-
-        # pending updates observation {msg_id: first_seen_timestamp}
         self._pending_updates: dict = {}
-
-        # server-URI dedup  {uri: expiry_monotonic}
-        self._recent_servers: dict = {}   # URI → expiry (TTL 10s)
-
-        # deleted message IDs observed from MESSAGE_DELETE
-        # deque gives deterministic eviction order (FIFO) unlike set trimming
+        self._recent_servers: dict = {}
         self._deleted_msg_ids: deque = deque(maxlen=1000)
+        self._delete_watch_targets: dict[str, tuple[float, str, str, float]] = {}
 
-        self.blacklist = blacklist   # Optional BlacklistManager
-        self.cooldown  = cooldown    # Optional CooldownManager
-        self._plugins  = plugins     # Optional PluginLoader
+        self.blacklist = blacklist
+        self.cooldown  = cooldown
 
         self._file_logger: Optional[logging.Logger] = None
         if config.log_to_file:
             self._setup_file_logger()
 
-        # Callbacks set by the Bridge
         self.on_log:              Callable = lambda e: None
         self.on_status:           Callable = lambda s: None
         self.on_snipe:            Callable = lambda data: None
@@ -1480,10 +1240,40 @@ class SniperEngine:
 
     @property
     def uptime_seconds(self) -> float:
-        return (time.monotonic() - self._start_ts) if self._running and self._start_ts else 0.0
+        if not self._running or not self._start_ts:
+            return 0.0
+        now = self._pause_started_at if self._paused and self._pause_started_at else time.monotonic()
+        return max(0.0, now - self._start_ts - self._paused_total)
+
+    def set_paused(self, paused: bool, log_message: str = ""):
+        if paused == self._paused:
+            return
+        now = time.monotonic()
+        if paused:
+            self._paused = True
+            self._pause_started_at = now
+        else:
+            self._paused = False
+            if self._pause_started_at:
+                self._paused_total += max(0.0, now - self._pause_started_at)
+            self._pause_started_at = 0.0
+            task = self._auto_pause_task
+            if task and not task.done():
+                try:
+                    current = asyncio.current_task()
+                except RuntimeError:
+                    current = None
+                if current is not task:
+                    task.cancel()
+                    self._auto_pause_task = None
+        try:
+            self.on_paused(self._paused)
+        except Exception:
+            pass
+        if log_message:
+            self._log(LogLevel.INFO, log_message)
 
     def _setup_file_logger(self):
-        """Rotating file logger — max 5 MB, single backup."""
         try:
             from logging.handlers import RotatingFileHandler
             log_path = get_log_path()
@@ -1511,22 +1301,201 @@ class SniperEngine:
         except Exception:
             pass
 
-    def _prewarm_roblox(self):
-        """Open Roblox in the background so it's ready when a snipe fires."""
-        if not ProcessManager.is_roblox_running():
-            try:
-                ProcessManager.open_roblox_link("roblox://")
-                self._log(LogLevel.DEBUG, "[ENGINE] Pre-warming Roblox…", dev_only=True)
-            except Exception:
-                pass
-
     def _purge_expired_caches(self):
-        """Drop expired entries from all TTL caches."""
         now = time.monotonic()
         for d in (self._recent_servers,):
             expired = [k for k, exp in d.items() if now >= exp]
             for k in expired:
                 del d[k]
+        expired_deletes = [mid for mid, (deadline, *_rest) in self._delete_watch_targets.items() if now >= deadline]
+        for mid in expired_deletes:
+            self._delete_watch_targets.pop(mid, None)
+
+    def _track_task(self, coro, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.append(task)
+        task.add_done_callback(self._on_tracked_task_done)
+        return task
+
+    def _webhook_enabled_for(self, event: str) -> bool:
+        webhook = getattr(self.config, "webhook", None)
+        if not webhook or not webhook.enabled or not webhook.url.strip():
+            return False
+        return {
+            "start": webhook.on_start,
+            "stop": webhook.on_stop,
+            "snipe": webhook.on_snipe,
+            "biome": webhook.on_biome,
+        }.get(event, False)
+
+    @staticmethod
+    def _discord_timestamp(dt: datetime) -> str:
+        ts = int(dt.timestamp())
+        return f"<t:{ts}:F> (<t:{ts}:R>)"
+
+    @staticmethod
+    def _discord_code_block(value: str, limit: int = 900) -> str:
+        clean = str(value).replace("```", "'''")[:limit]
+        return f"```{clean}```"
+
+    def _webhook_ping_content(self) -> str:
+        webhook = self.config.webhook
+        target = webhook.ping_target.strip()
+        if not target:
+            return ""
+        if target.startswith("<@"):
+            return target
+        if webhook.ping_type == "role":
+            return f"<@&{target}>"
+        if webhook.ping_type == "user":
+            return f"<@{target}>"
+        return target
+
+    def _build_webhook_payload(self, event: str, **kwargs) -> dict | None:
+        now = datetime.now(timezone.utc)
+        ts_label = self._discord_timestamp(now)
+        embed = {
+            "color": 0xFFFFFF,
+            "footer": {
+                "text": f"Slaoq's Sniper v{APP_VERSION}",
+                "icon_url": WEBHOOK_LOGO_URL,
+            },
+            "timestamp": now.isoformat(),
+        }
+
+        if event == "start":
+            embed["title"] = ts_label
+            embed["description"] = "> # Sniper Started"
+
+        elif event == "stop":
+            embed["title"] = ts_label
+            embed["description"] = "> # Sniper Stopped"
+            embed["color"] = 0x666666
+
+        elif event == "snipe":
+            profile_name = str(kwargs.get("profile") or "Unknown")
+            verify_biome = str(kwargs.get("verify_biome_name") or "").strip().upper()
+            author_display = str(kwargs.get("author_display") or kwargs.get("author") or "Unknown")
+            author_name = str(kwargs.get("author") or author_display)
+            author_avatar = str(kwargs.get("author_avatar_url") or "")
+            raw_message = str(kwargs.get("raw_message") or "")
+            roblox_web_url = str(kwargs.get("roblox_web_url") or kwargs.get("link") or "")
+            jump_url = str(kwargs.get("jump_url") or "")
+            keyword = str(kwargs.get("keyword") or "")
+            buttons = kwargs.get("buttons") or []
+            relative_ts = f"<t:{int(now.timestamp())}:R>"
+            author_tag = f"@{author_name}" if author_name != author_display else f"@{author_display}"
+
+            embed["author"] = {
+                "name": f"Author: {author_display} ({author_tag})",
+                "icon_url": author_avatar or WEBHOOK_LOGO_URL,
+            }
+            snipe_label = f"{verify_biome} Biome Sniped" if verify_biome else "Sniped"
+            desc_lines = [f"> # {snipe_label} - {relative_ts}", ""]
+            if roblox_web_url and not roblox_web_url.lower().startswith("roblox://"):
+                desc_lines.append(f"## [Join Private Server Link]({roblox_web_url})")
+            elif jump_url:
+                desc_lines.append(f"[Jump to Original Message]({jump_url})")
+            embed["description"] = "\n".join(desc_lines)
+            embed["fields"] = [
+                {"name": "Keyword Detected", "value": f'`"{keyword}"`' if keyword else "-", "inline": True},
+                {"name": "Profile", "value": f"` {profile_name.upper()} `", "inline": True},
+            ]
+            if raw_message:
+                embed["fields"].append({
+                    "name": "Message Content",
+                    "value": self._discord_code_block(raw_message),
+                    "inline": False,
+                })
+            button_lines = []
+            for button in buttons:
+                if not isinstance(button, (list, tuple)) or len(button) < 2:
+                    continue
+                label, url = button[0], button[1]
+                if label and url:
+                    button_lines.append(f"**[{label}]({url})**")
+            if button_lines:
+                embed["fields"].append({
+                    "name": "Buttons",
+                    "value": "\n".join(button_lines),
+                    "inline": False,
+                })
+
+        elif event == "biome":
+            expected = str(kwargs.get("expected") or "Unknown")
+            detected = str(kwargs.get("detected") or "Unknown")
+            matched = bool(kwargs.get("match"))
+            icon = "✅" if matched else "❌"
+            embed["title"] = ts_label
+            embed["description"] = (
+                f"> ## {icon} Biome Verification - {'Match' if matched else 'Mismatch'}\n"
+                f"**Expected:** `{expected}`\n"
+                f"**Detected:** `{detected}`"
+            )
+            embed["color"] = 0xFFFFFF if matched else 0x444444
+
+        else:
+            return None
+
+        payload = {
+            "content": self._webhook_ping_content(),
+            "embeds": [embed],
+        }
+        if payload["content"]:
+            payload["allowed_mentions"] = {"parse": ["roles", "users"]}
+        return payload
+
+    async def _send_webhook(self, event: str, **kwargs) -> None:
+        if not self._webhook_enabled_for(event):
+            return
+        webhook = self.config.webhook
+        payload = self._build_webhook_payload(event, **kwargs)
+        if not payload:
+            return
+
+        session = self._session
+        owns_session = False
+        if session is None or session.closed:
+            session = aiohttp.ClientSession(timeout=HTTP_REQUEST_TIMEOUT)
+            owns_session = True
+        try:
+            async with session.post(webhook.url, json=payload) as response:
+                if response.status == 429:
+                    retry_after = 1.0
+                    try:
+                        retry_after = float((await response.json()).get("retry_after", retry_after))
+                    except Exception:
+                        pass
+                    await asyncio.sleep(max(0.2, min(retry_after, 8.0)))
+                    async with session.post(webhook.url, json=payload) as retry_response:
+                        if retry_response.status not in {200, 204}:
+                            body = await retry_response.text()
+                            self._log(LogLevel.WARN, f"[WEBHOOK] {event} retry failed: HTTP {retry_response.status} {body[:120]}")
+                            return
+                    self._log(LogLevel.INFO, f"[WEBHOOK] {event} notification sent.")
+                    return
+                if response.status not in {200, 204}:
+                    body = await response.text()
+                    self._log(LogLevel.WARN, f"[WEBHOOK] {event} failed: HTTP {response.status} {body[:120]}")
+                    return
+            self._log(LogLevel.INFO, f"[WEBHOOK] {event} notification sent.")
+        except Exception as exc:
+            self._log(LogLevel.WARN, f"[WEBHOOK] {event} failed: {exc}")
+        finally:
+            if owns_session:
+                await session.close()
+
+    def _on_tracked_task_done(self, task: asyncio.Task) -> None:
+        if task in self._tasks:
+            self._tasks.remove(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            self._log(LogLevel.ERROR, f"[ENGINE] Background task failed: {exc}")
 
 
     async def start(self):
@@ -1535,6 +1504,9 @@ class SniperEngine:
         self._running  = True
         self._paused   = False
         self._start_ts = time.monotonic()
+        self._paused_total = 0.0
+        self._pause_started_at = 0.0
+        self._auto_pause_task = None
         self._set_status(EngineStatus.CONNECTING)
 
         connector     = aiohttp.TCPConnector(
@@ -1543,26 +1515,25 @@ class SniperEngine:
         self._resolver = LinkResolver(self._session)
         self._filter   = ProfileFilter(self.config)
 
-        if self._plugins:
-            self._plugins.init_all(engine=self, ui=None)
-
         self._log(LogLevel.INFO, "[ENGINE] Sniper starting…")
-
-        if self._plugins:
-            self._plugins.broadcast("on_start", {
-                "config": self.config,
-            })
 
         self._tasks = [
             asyncio.create_task(self._run_gateway(),      name="gateway"),
             asyncio.create_task(self._ping_updater(),     name="ping"),
             asyncio.create_task(self._log_monitor_loop(), name="log_monitor"),
         ]
+        self._track_task(
+            self._send_webhook("start"),
+            "webhook_start",
+        )
 
         try:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         except asyncio.CancelledError:
             pass
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
 
     async def stop(self):
         if not self._running:
@@ -1570,9 +1541,7 @@ class SniperEngine:
         self._running = False
         self._paused  = False
         self._log(LogLevel.INFO, "[ENGINE] Stopping sniper…")
-
-        if self._plugins:
-            self._plugins.broadcast("on_stop")
+        await self._send_webhook("stop")
 
         if self.cooldown:
             self.cooldown.reset()
@@ -1600,6 +1569,10 @@ class SniperEngine:
 
     def reload_config(self, config: SniperConfig):
         self.config = config
+        if self._gateway:
+            self._gateway.config = config
+        for gateway in self._extra_gateways.values():
+            gateway.config = config
         if self._filter:
             self._filter = ProfileFilter(config)
         if config.log_to_file and self._file_logger is None:
@@ -1614,11 +1587,27 @@ class SniperEngine:
             cd.profile_ttl = getattr(config, "cooldown_profile_ttl",  0.0)
             cd.link_ttl    = getattr(config, "cooldown_link_ttl",    10.0)
             self.cooldown.update_config(cd)
+        if self._running:
+            self._sync_extra_gateways()
+
+    def _sync_extra_gateways(self) -> None:
+        desired = {
+            token.strip()
+            for token in getattr(self.config, "extra_tokens", [])
+            if token.strip() and token.strip() != self.config.token
+        }
+        for token, gateway in list(self._extra_gateways.items()):
+            if token not in desired:
+                self._track_task(gateway.disconnect(), "gateway_extra_disconnect")
+        for token in desired:
+            if token not in self._extra_gateways:
+                self._track_task(self._run_extra_gateway(token), "gateway_extra")
 
     async def _run_gateway(self):
         if not self.config.token:
             self._log(LogLevel.ERROR, "[ENGINE] Discord token not configured")
             self._set_status(EngineStatus.ERROR)
+            self._running = False
             return
 
         self._gateway = DiscordGateway(
@@ -1628,31 +1617,38 @@ class SniperEngine:
             on_status=self._set_status,
             config=self.config,
             on_message_delete=self._on_discord_message_delete,
+            label="primary",
         )
 
-        extra_tokens = getattr(self.config, "extra_tokens", [])
-        for tok in extra_tokens:
-            if tok and tok != self.config.token:
-                t = asyncio.create_task(
-                    self._run_extra_gateway(tok), name=f"gateway_extra_{tok[:6]}")
-                self._tasks.append(t)
-                t.add_done_callback(
-                    lambda x: self._tasks.remove(x) if x in self._tasks else None)
+        self._sync_extra_gateways()
 
         await self._gateway.connect()
 
     async def _run_extra_gateway(self, token: str):
-        """Secondary gateway — receive messages only, no status updates."""
+        if token in self._extra_gateways:
+            return
+
+        def extra_status(status):
+            value = getattr(status, "value", str(status))
+            if value == EngineStatus.CONNECTED.value:
+                self._log(LogLevel.SUCCESS, "[ENGINE] Extra token gateway connected.")
+
         gw = DiscordGateway(
             token=token,
             on_message=self._on_discord_message,
             on_log=self.on_log,
-            on_status=lambda s: None,   # suppress status updates from secondaries
+            on_status=extra_status,
             config=self.config,
             on_message_delete=self._on_discord_message_delete,
+            label="extra",
+            poll_fallback=True,
         )
-        self._log(LogLevel.INFO, f"[ENGINE] Extra token connected: {token[:10]}…")
-        await gw.connect()
+        self._extra_gateways[token] = gw
+        self._log(LogLevel.INFO, "[ENGINE] Extra token gateway connecting.")
+        try:
+            await gw.connect()
+        finally:
+            self._extra_gateways.pop(token, None)
 
     async def _ping_updater(self):
         while self._running:
@@ -1693,15 +1689,10 @@ class SniperEngine:
 
         now = time.monotonic()
 
-        # clean up old pending updates (older than 60 seconds)
         expired = [mid for mid, ts in self._pending_updates.items()
                   if now - ts > 60]
         for mid in expired:
             del self._pending_updates[mid]
-
-        self.metrics["messages_scanned"] += 1
-        self._log(LogLevel.DEBUG,
-            f"[MSG] Processing from {author}: {content[:60]}", dev_only=True)
 
         if msg_id and msg_id in self._seen_msg_ids and not is_update:
             self._log(LogLevel.DEBUG,
@@ -1710,7 +1701,11 @@ class SniperEngine:
         if not is_update and msg_id:
             self._seen_msg_ids.append(msg_id)
 
-        # check if this message is being observed as pending update
+        self.metrics["messages_scanned"] += 1
+        self._log(LogLevel.DEBUG,
+            f"[MSG{'_UPDATE' if is_update else ''}] Processing from {author}: {content[:60]}",
+            dev_only=True)
+
         if is_update and msg_id in self._pending_updates:
             del self._pending_updates[msg_id]
 
@@ -1743,14 +1738,6 @@ class SniperEngine:
         self._log(LogLevel.DEBUG,
             f"[FILTER] Profile '{profile.name}' matched — scanning for link", dev_only=True)
 
-        if self._plugins:
-            self._plugins.broadcast("on_message_matched", {
-                "profile": profile.name,
-                "author":  author,
-                "content": content,
-                "full":    full,
-            })
-
         link = self._resolver.extract_roblox_link(full)
         if not link:
             self._log(LogLevel.INFO,
@@ -1780,17 +1767,15 @@ class SniperEngine:
             )
             if blocked:
                 self._log(LogLevel.INFO, f"[COOLDOWN] Blocked — {reason}")
-                if self._plugins:
-                    self._plugins.broadcast("on_cooldown_blocked", {
-                        "reason":  reason,
-                        "profile": profile.name,
-                        "uri":     uri,
-                    })
                 return
             self.cooldown.mark(guild_id, profile.name, uri)
 
         self._snipe_count += 1
         self.metrics["snipes_successful"] += 1
+
+        watch_s = getattr(self.config, "delete_watch_seconds", 0)
+        if watch_s > 0 and author_id and msg_id:
+            self._arm_delete_watch(author_id, author_display or author, msg_id, watch_s)
 
         keyword_hit = ""
         if profile and profile._compiled_triggers:
@@ -1833,8 +1818,6 @@ class SniperEngine:
                 f"force_close={force_close}",
                 dev_only=True)
 
-            loop = asyncio.get_running_loop()
-
             if roblox_running:
                 self._log(LogLevel.INFO,
                     "[JOIN] Roblox already open — joining directly…")
@@ -1854,7 +1837,7 @@ class SniperEngine:
         if profile.verify_biome_name and self.config.anti_bait_enabled:
             self._log(LogLevel.INFO,
                 f"[ANTI-BAIT] Starting biome verification for '{profile.verify_biome_name.upper()}'…")
-            asyncio.create_task(self._verify_biome(profile, uri))
+            self._track_task(self._verify_biome(profile, uri), "verify_biome")
         else:
             self._log(LogLevel.DEBUG,
                 f"[JOIN] No biome verification (verify_biome_name='{profile.verify_biome_name}', "
@@ -1893,69 +1876,67 @@ class SniperEngine:
             self.on_snipe(snipe_data)
         except Exception:
             pass
-        if self._plugins:
-            self._plugins.broadcast("on_snipe", snipe_data)
-
-        watch_s = getattr(self.config, "delete_watch_seconds", 0)
-        if watch_s > 0 and author_id and msg_id:
-            task = asyncio.create_task(
-                self._delete_watch(author_id, author_display or author,
-                                   msg_id, guild_id, channel_id, watch_s))
-            self._tasks.append(task)
-            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+        self._track_task(
+            self._send_webhook("snipe", **snipe_data),
+            "webhook_snipe",
+        )
 
         pause_s = self.config.pause_after_snipe_s
         if pause_s > 0:
-            task = asyncio.create_task(self._pause_after_snipe(pause_s))
-            self._tasks.append(task)
-            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+            if self._auto_pause_task and not self._auto_pause_task.done():
+                self._auto_pause_task.cancel()
+            task = self._track_task(self._pause_after_snipe(pause_s), "pause_after_snipe")
+            self._auto_pause_task = task
 
     async def _pause_after_snipe(self, pause_s: int):
-        self._paused = True
-        try:
-            self.on_paused(True)
-        except Exception:
-            pass
-        self._log(LogLevel.INFO, f"[ENGINE] Auto-paused for {pause_s}s after snipe…")
+        self.set_paused(True, f"[ENGINE] Auto-paused for {pause_s}s after snipe…")
         try:
             await asyncio.sleep(pause_s)
         except asyncio.CancelledError:
-            pass
+            return
         finally:
-            self._paused = False
-        if self._running:
-            try:
-                self.on_paused(False)
-            except Exception:
-                pass
-            self._log(LogLevel.INFO, "[ENGINE] Auto-pause ended — resuming scan.")
+            if self._auto_pause_task is asyncio.current_task():
+                self._auto_pause_task = None
+        if self._running and self._paused:
+            self.set_paused(False, "[ENGINE] Auto-pause ended — resuming scan.")
 
-    async def _delete_watch(self, author_id: str, author_name: str,
-                            msg_id: str, guild_id: str, channel_id: str,
-                            watch_s: float):
-        """Watch for message deletion within watch_s seconds and auto-blacklist."""
-        deadline = time.monotonic() + watch_s
-        while time.monotonic() < deadline and self._running:
-            await asyncio.sleep(0.5)
-            if msg_id in self._deleted_msg_ids:
-                # remove the found entry from the deque
-                try:
-                    self._deleted_msg_ids.remove(msg_id)
-                except ValueError:
-                    pass
-                if self.blacklist:
-                    self.blacklist.add(author_id, author_name, reason="message_deleted")
-                    self._log(LogLevel.WARN,
-                        f"[BLACKLIST] Auto-blacklisted {author_name} ({author_id})"
-                        f" — deleted snipe message within {watch_s:.0f}s")
-                try:
-                    self.on_delete_blacklist(author_id, author_name)
-                except Exception:
-                    pass
-                return
+    def _arm_delete_watch(self, author_id: str, author_name: str, msg_id: str, watch_s: float) -> None:
+        self._delete_watch_targets[msg_id] = (
+            time.monotonic() + watch_s,
+            author_id,
+            author_name,
+            watch_s,
+        )
+        self._log(LogLevel.DEBUG, f"[BLACKLIST] Watching message delete for {watch_s:.0f}s", dev_only=True)
+        if msg_id in self._deleted_msg_ids:
+            self._handle_watched_delete(msg_id)
+            return
+        self._track_task(self._delete_watch_timeout(msg_id, watch_s), "delete_watch")
+
+    async def _delete_watch_timeout(self, msg_id: str, watch_s: float):
+        await asyncio.sleep(watch_s)
+        self._delete_watch_targets.pop(msg_id, None)
+
+    def _handle_watched_delete(self, msg_id: str) -> bool:
+        target = self._delete_watch_targets.pop(msg_id, None)
+        if not target:
+            return False
+        _deadline, author_id, author_name, watch_s = target
+        if self.blacklist:
+            self.blacklist.add(author_id, author_name, reason="message_deleted")
+            self._log(LogLevel.WARN,
+                f"[BLACKLIST] Auto-blacklisted {author_name} ({author_id})"
+                f" — deleted snipe message within {watch_s:.0f}s")
+        try:
+            self.on_delete_blacklist(author_id, author_name)
+        except Exception:
+            pass
+        return True
 
     async def _on_discord_message_delete(self, guild_id: str, channel_id: str, msg_id: str):
         if msg_id:
+            if self._handle_watched_delete(msg_id):
+                return
             self._deleted_msg_ids.append(msg_id)
 
     async def _verify_biome(self, profile: SnipeProfile, uri: str):
@@ -1999,12 +1980,7 @@ class SniperEngine:
             self._log(LogLevel.DEBUG,
                 f"[ANTI-BAIT] biome_leave_action = '{action}'", dev_only=True)
             if action != "none":
-                asyncio.create_task(self._biome_watcher(expected, action))
-            if self._plugins:
-                self._plugins.broadcast("on_biome_verified", {
-                    "expected": expected,
-                    "detected": detected,
-                })
+                self._track_task(self._biome_watcher(expected, action), "biome_watcher")
         else:
             self._log(LogLevel.WARN,
                 f"[ANTI-BAIT] Wrong biome — expected '{expected}', got '{detected}'")
@@ -2018,7 +1994,7 @@ class SniperEngine:
                         "[ANTI-BAIT] Wrong biome — killing Roblox and returning to home…")
                     try:
                         await loop.run_in_executor(
-                            None, lambda: self._execute_biome_leave("home"))
+                            None, lambda: self._execute_biome_leave("home", force_restart=True))
                     except Exception as exc:
                         self._log(LogLevel.ERROR,
                             f"[ANTI-BAIT] Failed to return to home: {exc}")
@@ -2033,6 +2009,15 @@ class SniperEngine:
             self.on_biome(expected, detected, matched)
         except Exception:
             pass
+        self._track_task(
+            self._send_webhook(
+                "biome",
+                expected=expected,
+                detected=detected,
+                match=matched,
+            ),
+            "webhook_biome",
+        )
 
     async def _biome_watcher(self, expected_biome: str, action: str):
         self._log(LogLevel.INFO,
@@ -2087,11 +2072,9 @@ class SniperEngine:
                         dev_only=True)
                 stable_count = 0
 
-    def _execute_biome_leave(self, action: str):
+    def _execute_biome_leave(self, action: str, force_restart: bool = False):
         if action == "kill":
             ProcessManager.kill_roblox()
-            if self._plugins:
-                self._plugins.broadcast("on_biome_left", {"action": action})
             return
         elif action == "home":
             killed = False
@@ -2099,7 +2082,18 @@ class SniperEngine:
             has_logs = ProcessManager.has_active_logs()
             in_game = has_logs
             
-            if not roblox_running:
+            if force_restart and roblox_running:
+                killed = ProcessManager.kill_roblox_and_wait(timeout=5.0)
+                if not killed and ProcessManager.is_roblox_running():
+                    ProcessManager.kill_roblox()
+                    time.sleep(1.0)
+                self._log_reader.mark_launch()
+                try:
+                    os.startfile("roblox://")
+                except Exception:
+                    pass
+                self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox was restarted and returned to home.")
+            elif not roblox_running:
                 self._log_reader.mark_launch()
                 try:
                     os.startfile("roblox://")
@@ -2119,5 +2113,3 @@ class SniperEngine:
                 self._log_reader.mark_launch()
                 self._log(LogLevel.INFO, "[BIOME WATCHER] Roblox already on home page.")
         
-        if self._plugins:
-            self._plugins.broadcast("on_biome_left", {"action": action})
