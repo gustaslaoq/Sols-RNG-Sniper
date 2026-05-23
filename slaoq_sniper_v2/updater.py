@@ -282,5 +282,10 @@ while (Get-Process -Name $processName -ErrorAction SilentlyContinue) {{
 }}
 
 Move-Item -Force -LiteralPath $src -Destination $dst
+
+Get-ChildItem Env: | Where-Object {{ $_.Name -like '_PYI_*' -or $_.Name -eq 'PYINSTALLER_RESET_ENVIRONMENT' }} | ForEach-Object {{
+    Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
+}}
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
 Start-Process -FilePath $dst
 """.strip()

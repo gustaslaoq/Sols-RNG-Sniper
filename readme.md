@@ -10,7 +10,7 @@ The app monitors Discord channels, detects matching private server links, and op
 
 [![Windows](https://img.shields.io/badge/Windows-10%2B-0078d4?style=flat-square&logo=windows&logoColor=white)](#requirements)
 [![Download](https://img.shields.io/badge/Download-GitHub%20Releases-00c853?style=flat-square&logo=github)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases)
-[![Version](https://img.shields.io/badge/Version-2.0.2-white?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/Version-2.0.3-white?style=flat-square)](#)
 
 </div>
 
@@ -361,7 +361,7 @@ Build the executable:
 Generate a release manifest:
 
 ```powershell
-.\.venv\Scripts\python.exe .\release\make_manifest.py --version 2.0.2 --exe .\dist\SlaoqSniper.exe --output .\manifest.json --notes-file .\release-notes.txt
+.\.venv\Scripts\python.exe .\release\make_manifest.py --version 2.0.3 --exe .\dist\SlaoqSniper.exe --output .\manifest.json --notes-file .\release-notes.txt
 ```
 
 Main public source layout:
