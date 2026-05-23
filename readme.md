@@ -9,7 +9,7 @@ Automatic private server sniper for **Sol's RNG** on Roblox.
 The app monitors Discord channels, detects matching private server links, and opens Roblox automatically.
 
 [![Windows](https://img.shields.io/badge/Windows-10%2B-0078d4?style=flat-square&logo=windows&logoColor=white)](#requirements)
-[![Download](https://img.shields.io/badge/Download-GitHub%20Releases-00c853?style=flat-square&logo=github)](#download)
+[![Download](https://img.shields.io/badge/Download-GitHub%20Releases-00c853?style=flat-square&logo=github)](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases)
 [![Version](https://img.shields.io/badge/Version-2.0.0-white?style=flat-square)](#)
 
 </div>
@@ -65,7 +65,7 @@ Normal users do not need Python, Git, pip, or any development tools.
 
 ## Download
 
-1. Open the **Releases** page for this repository.
+1. Open the [**Releases**](https://github.com/gustaslaoq/Sols-RNG-Sniper/releases) page for this repository.
 2. Download `SlaoqSniper.exe`.
 3. Put the executable in its own folder.
 4. Run it.
